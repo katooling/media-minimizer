@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Minimizer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <main class="container">
+        <header class="title-block">
+            <h1>Media Minimizer</h1>
+            <p class="subtle">Client-only converter for large uploads. Video to .mov, image to optimized image.</p>
+        </header>
+
+        <section class="panel">
+            <label id="dropZone" class="drop-zone" for="fileInput">
+                <input id="fileInput" type="file" accept="video/*,image/*" hidden>
+                <span class="drop-title">Drop file here</span>
+                <span class="drop-note">or click to select a video/image</span>
+            </label>
+
+            <div id="fileSummary" class="file-summary">No file selected.</div>
+
+            <div class="controls">
+                <label class="field" for="maxSizeInput">
+                    <span>Max size (MB)</span>
+                    <input id="maxSizeInput" type="number" min="1" step="1" value="10">
+                </label>
+                <button id="minimizeBtn" class="btn btn-primary" disabled>Minimize</button>
+                <button id="downloadBtn" class="btn btn-secondary" disabled>Download</button>
+            </div>
+
+            <div id="status" class="notice info">Drop a video or image to start.</div>
+
+            <div id="result" class="result" hidden>
+                <div><strong>Original:</strong> <span id="originalSize">-</span></div>
+                <div><strong>Output:</strong> <span id="outputSize">-</span></div>
+                <div><strong>Saved:</strong> <span id="savedSize">-</span></div>
+                <div><strong>Output file:</strong> <span id="outputName">-</span></div>
+            </div>
+        </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
