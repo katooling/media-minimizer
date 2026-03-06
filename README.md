@@ -79,7 +79,7 @@ Optional URL overrides for local testing:
 
 - `?debug=1&stallMs=2500`
 - `?debug=1&encodeTimeoutMs=20000`
-- `?debug=1&ffmpegMock=no-progress-complete|stall|mt-stall-fallback`
+- `?debug=1&ffmpegMock=no-progress-complete|stall|mt-stall-fallback|filter-graph-retry`
 
 ## Cross-Origin Isolation on GitHub Pages
 
@@ -109,8 +109,43 @@ Open: `http://127.0.0.1:8000`
 cd /Users/mkamar/Non_Work/Projects/media-minimizer
 npm install
 npm run test:e2e
+npm run test:e2e:real-video
 npm run bench:video
 ```
+
+`test:e2e:real-video` uses:
+
+- `REAL_VIDEO_PATH` (optional absolute path)
+- default: `~/Downloads/Screen Recording 2025-12-11 at 3.04.37 PM.mov`
+- starts a local static server automatically for the smoke run
+
+## Agent E2E Workflow
+
+Use this deterministic workflow after every code change:
+
+```bash
+cd /Users/mkamar/Non_Work/Projects/media-minimizer
+npm run test:e2e:agent
+```
+
+Useful variants:
+
+```bash
+# rerun only previously failing tests
+npm run test:e2e:agent:last-failed
+
+# run one focused test from CLI arguments
+npm run test:e2e:agent -- --grep "video flow converts to mov"
+```
+
+What it does:
+
+- runs tests in single-worker mode for reproducibility
+- retains trace, screenshot, and video on failures
+- writes JSON report to `test-results/agent-results.json`
+- prints failed test summary + artifact paths
+- generates HTML report (`npm run test:e2e:report`)
+- runs real-video smoke automatically when `REAL_VIDEO_PATH` (or default Downloads path) exists
 
 ## Custom Core Pipeline
 

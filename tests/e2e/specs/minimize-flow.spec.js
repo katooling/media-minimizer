@@ -194,6 +194,26 @@ test("mock video no-progress logs still completes without hang", async ({ page }
     expect(debug.live.processing).toBe(false);
 });
 
+test("mock filter-graph failure retries filterless and succeeds", async ({ page }) => {
+    test.setTimeout(90000);
+    await page.goto("/?debug=1&ffmpegMock=filter-graph-retry&stallMs=3000");
+    await waitForEngineReady(page);
+    await uploadForcedEncodeVideo(page);
+
+    await page.locator("#minimizeBtn").click();
+    await expect(page.locator("#status")).toContainText("Done.", { timeout: 45000 });
+    await expect(page.locator("#downloadBtn")).toBeEnabled();
+
+    const debug = await page.evaluate(() => ({
+        trace: window.__mediaMinimizerDebug.getLastTrace(),
+        metrics: window.__mediaMinimizerDebug.getLastRunMetrics(),
+    }));
+
+    expect(debug.trace.some((entry) => entry.event === "encode-retry" && entry.retryType === "filterless")).toBe(true);
+    expect(debug.metrics?.notes || []).toContain("filterless-retry");
+    expect(debug.trace.some((entry) => entry.event === "run-end" && entry.status === "success")).toBe(true);
+});
+
 test("mock stall triggers fallback once then succeeds", async ({ page }) => {
     test.setTimeout(120000);
     await page.goto("/?debug=1&ffmpegMock=mt-stall-fallback&stallMs=2500");

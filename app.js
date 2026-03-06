@@ -59,7 +59,7 @@ const TARGET_PAYLOAD_RATIO = 0.96;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const ST_LARGE_THRESHOLD_BYTES = 24 * 1024 * 1024;
 const REMUX_MARGIN_RATIO = 1.18;
-const ASSET_VERSION = "20260306-2";
+const ASSET_VERSION = "20260306-3";
 const PROGRESS_TICK_INTERVAL_MS = 250;
 const debugParams = typeof globalThis.location !== "undefined" ? new URLSearchParams(globalThis.location.search) : new URLSearchParams("");
 const DEBUG_MODE = debugParams.get("debug") === "1";
@@ -74,6 +74,14 @@ const ENCODE_WATCHDOG_INTERVAL_MS = 1_000;
 const ENCODE_HARD_STALL_MIN_MS = 120_000;
 const ENCODE_HARD_STALL_MAX_MS = 420_000;
 const ENCODE_TIMEOUT_MS = Number.isFinite(parsedDebugTimeoutMs) && parsedDebugTimeoutMs > 1000 ? parsedDebugTimeoutMs : 12 * 60 * 1000;
+const FFMPEG_ERROR_TAIL_LIMIT = 120;
+const FILTER_GRAPH_ERROR_PATTERNS = [
+    /no such filter/i,
+    /error reinitializing filters/i,
+    /failed to inject frame into filter network/i,
+    /error while processing the decoded data/i,
+    /filter.*invalid argument/i,
+];
 const DROP_TITLE_DEFAULT = "Drop file here";
 const DROP_NOTE_DEFAULT = "or click to select a video/image";
 const DROP_TITLE_READY = "File selected";
@@ -283,8 +291,12 @@ async function onMinimizeClick() {
             } catch (error) {
                 if (shouldRetryWithSingleThread(error)) {
                     appendMetricNote(runMetrics, "mt-runtime-fallback");
-                    const fallbackReason = error?.code === "ENCODE_STALLED" ? "stalled" : "failed";
+                    const fallbackReason = error?.code === "ENCODE_STALLED" ? "stalled" : error?.code === "ENCODE_FILTER_GRAPH" ? "filter-graph failed" : "failed";
                     setStatus(`MT engine ${fallbackReason}. Retrying with ST engine...`, "info");
+                    traceEvent("encode-retry", {
+                        retryType: "mt->st",
+                        reason: error?.code || "mt-runtime-fallback",
+                    });
                     traceEvent("error", {
                         eventCode: error?.code || "mt-fallback",
                         message: error instanceof Error ? error.message : String(error || ""),
@@ -302,8 +314,13 @@ async function onMinimizeClick() {
         traceEvent("run-end", { status: "success" });
         setOutputResult(result, targetBytes);
     } catch (error) {
+        if (runMetrics) {
+            runMetrics.failureCode = error?.code || "RUN_FAILED";
+            runMetrics.failureMessage = error instanceof Error ? error.message : String(error || "Minimize failed.");
+            runMetrics.failureDetails = error?.details || null;
+        }
         endRunMetrics(runMetrics, "failed");
-        const message = error instanceof Error ? error.message : "Minimize failed.";
+        const message = formatUserFacingFailure(error);
         traceEvent("error", {
             eventCode: error?.code || "run-error",
             message,
@@ -528,7 +545,7 @@ function shouldRetryWithSingleThread(error) {
     if (modeHint !== "mt-fast" || state.disableMtForSession) {
         return false;
     }
-    if (error?.code === "ENCODE_STALLED" || error?.code === "ENCODE_TIMEOUT") {
+    if (error?.code === "ENCODE_STALLED" || error?.code === "ENCODE_TIMEOUT" || error?.code === "ENCODE_FILTER_GRAPH") {
         return true;
     }
     const message = error instanceof Error ? error.message : String(error || "");
@@ -562,6 +579,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
     traceEvent("engine-load", { phase: "start" });
     beginStage(runMetrics, "load");
     const ffmpeg = await getFfmpeg(file.size);
+    recordRunModeAttempt(runMetrics, state.ffmpegMode);
     endStage(runMetrics, "load", { mode: state.ffmpegMode });
     traceEvent("engine-load", { phase: "end", mode: state.ffmpegMode });
 
@@ -764,7 +782,46 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
     }
 
     if (exitCode !== 0) {
-        throw new Error(`Video conversion failed during ${attemptLabel}.`);
+        const classifiedError = classifyEncodeFailure({
+            attemptLabel,
+            mode: modeAtStart,
+            profile: activeProfile,
+        });
+        if (classifiedError.code === "ENCODE_FILTER_GRAPH" && !activeProfile.forceNoFilters) {
+            attempts += 1;
+            traceEvent("encode-retry", {
+                retryType: "filterless",
+                attemptLabel,
+                reason: classifiedError.code,
+            });
+            appendMetricNote(runMetrics, "filterless-retry");
+            setProgressUpdate(`Minimizing video (${attemptLabel}, filterless retry)`, null);
+            setStatus(`Minimizing video (${attemptLabel})... retrying without filters.`, "info");
+            await safelyDeleteFile(ffmpeg, outputPath);
+            activeProfile = {
+                ...activeProfile,
+                maxFps: null,
+                maxHeight: null,
+                forceNoFilters: true,
+            };
+            exitCode = await execVideoWithWatchdog({
+                ffmpeg,
+                args: buildVideoEncodeArgs(inputPath, outputPath, activeProfile),
+                attemptLabel: `${attemptLabel} (filterless)`,
+                inputPath,
+                outputPath,
+                durationSeconds,
+                modeAtStart,
+            });
+        }
+    }
+
+    if (exitCode !== 0) {
+        throw classifyEncodeFailure({
+            attemptLabel,
+            mode: modeAtStart,
+            profile: activeProfile,
+        });
     }
 
     setCurrentStage("output-read");
@@ -785,9 +842,12 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
 }
 
 async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, outputPath, durationSeconds, modeAtStart }) {
-    const hasMockScenario = DEBUG_MOCK_MODE === "no-progress-complete" || DEBUG_MOCK_MODE === "stall" || DEBUG_MOCK_MODE === "mt-stall-fallback";
+    const hasMockScenario = DEBUG_MOCK_MODE === "no-progress-complete"
+        || DEBUG_MOCK_MODE === "stall"
+        || DEBUG_MOCK_MODE === "mt-stall-fallback"
+        || DEBUG_MOCK_MODE === "filter-graph-retry";
     if (hasMockScenario) {
-        return runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath });
+        return runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath, args });
     }
 
     const watchdog = startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart);
@@ -898,7 +958,7 @@ function startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart)
     };
 }
 
-async function runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath }) {
+async function runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath, args = [] }) {
     const statusPrefix = `Mock encode (${attemptLabel})`;
 
     if (DEBUG_MOCK_MODE === "no-progress-complete") {
@@ -936,6 +996,19 @@ async function runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath })
         setProgressUpdate("Minimizing video (ST fallback)", 70);
         await delay(250);
         setProgressUpdate("Minimizing video (ST fallback)", 100);
+        const inputData = await ffmpeg.readFile(inputPath);
+        await ffmpeg.writeFile(outputPath, inputData.slice(0, Math.min(inputData.length, 1024)));
+        return 0;
+    }
+
+    if (DEBUG_MOCK_MODE === "filter-graph-retry") {
+        const hasFilters = Array.isArray(args) && args.includes("-vf");
+        if (hasFilters) {
+            recordFfmpegLog("[AVFilterGraph @ 0x111] No such filter: 'null'", "stderr");
+            recordFfmpegLog("Error reinitializing filters!", "stderr");
+            recordFfmpegLog("Conversion failed!", "stderr");
+            return 1;
+        }
         const inputData = await ffmpeg.readFile(inputPath);
         await ffmpeg.writeFile(outputPath, inputData.slice(0, Math.min(inputData.length, 1024)));
         return 0;
@@ -999,15 +1072,17 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         "yuv420p",
     ];
 
-    const filters = [];
-    if (Number.isFinite(profile.maxFps) && profile.maxFps > 0) {
-        filters.push(`fps=${profile.maxFps}`);
-    }
-    if (Number.isFinite(profile.maxHeight) && profile.maxHeight > 0) {
-        filters.push(`scale=-2:${profile.maxHeight}`);
-    }
-    if (filters.length > 0) {
-        args.push("-vf", filters.join(","));
+    if (!profile.forceNoFilters) {
+        const filters = [];
+        if (Number.isFinite(profile.maxFps) && profile.maxFps > 0) {
+            filters.push(`fps=${profile.maxFps}`);
+        }
+        if (Number.isFinite(profile.maxHeight) && profile.maxHeight > 0) {
+            filters.push(`scale=-2:${profile.maxHeight}`);
+        }
+        if (filters.length > 0) {
+            args.push("-vf", filters.join(","));
+        }
     }
 
     if (profile.audioMode === "copy") {
@@ -1101,6 +1176,7 @@ function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode, sourceH
         runtimeMode,
         maxHeight,
         maxFps,
+        forceNoFilters: false,
         maxrateKbps: Math.max(videoKbps + 80, Math.floor(videoKbps * 1.18)),
         bufsizeKbps: Math.max(videoKbps + 160, Math.floor(videoKbps * 1.9)),
     };
@@ -1155,6 +1231,72 @@ function computeHardStallThresholdMs(durationSeconds, mode) {
     const modeFactor = mode === "mt-fast" ? 3.2 : 5.2;
     const derivedMs = safeDuration * modeFactor * 1000;
     return clamp(Math.round(derivedMs), ENCODE_HARD_STALL_MIN_MS, ENCODE_HARD_STALL_MAX_MS);
+}
+
+function classifyEncodeFailure({ attemptLabel, mode, profile }) {
+    const recentLines = getRecentFfmpegStderrLines(FFMPEG_ERROR_TAIL_LIMIT);
+    const terminalLine = getLastFfmpegTerminalLine(recentLines);
+    const joined = recentLines.join("\n");
+    const hasFilterGraphError = FILTER_GRAPH_ERROR_PATTERNS.some((pattern) => pattern.test(joined));
+    const details = {
+        attemptLabel,
+        mode,
+        profile: {
+            preset: profile?.preset || "",
+            videoKbps: profile?.videoKbps || null,
+            audioMode: profile?.audioMode || "",
+            audioKbps: profile?.audioKbps || null,
+            forceNoFilters: Boolean(profile?.forceNoFilters),
+        },
+        terminalLine,
+    };
+    if (hasFilterGraphError) {
+        return createAppError(
+            "ENCODE_FILTER_GRAPH",
+            `Video filter graph failed during ${attemptLabel}.`,
+            details
+        );
+    }
+    return createAppError(
+        "ENCODE_EXEC_FAILED",
+        `Video conversion failed during ${attemptLabel}.`,
+        details
+    );
+}
+
+function getRecentFfmpegStderrLines(limit = 40) {
+    const lines = [];
+    for (let index = state.ffmpegLogs.length - 1; index >= 0; index -= 1) {
+        const entry = state.ffmpegLogs[index];
+        if (!entry || entry.type !== "stderr") {
+            continue;
+        }
+        lines.push(String(entry.message || ""));
+        if (lines.length >= limit) {
+            break;
+        }
+    }
+    return lines.reverse();
+}
+
+function getLastFfmpegTerminalLine(lines = null) {
+    const source = Array.isArray(lines) ? lines : getRecentFfmpegStderrLines(FFMPEG_ERROR_TAIL_LIMIT);
+    for (let index = source.length - 1; index >= 0; index -= 1) {
+        const line = String(source[index] || "").trim();
+        if (line) {
+            return line;
+        }
+    }
+    return "";
+}
+
+function formatUserFacingFailure(error) {
+    const baseMessage = error instanceof Error ? error.message : "Minimize failed.";
+    const terminalLine = String(error?.details?.terminalLine || "").trim();
+    if (!terminalLine) {
+        return baseMessage;
+    }
+    return `${baseMessage} FFmpeg: ${truncateMessage(terminalLine, 180)}`;
 }
 
 async function probeVideoMetadataFromBrowser(file) {
@@ -1629,9 +1771,13 @@ function startRunMetrics(kind) {
         status: "running",
         runtimeMode: state.ffmpegMode,
         runtimePreferred: state.ffmpegPreferredMode,
+        attemptedModes: [],
         stages: {},
         notes: [],
         effectiveEncodeFps: null,
+        failureCode: null,
+        failureMessage: null,
+        failureDetails: null,
     };
 }
 
@@ -1681,6 +1827,19 @@ function appendMetricNote(runMetrics, note) {
         return;
     }
     runMetrics.notes.push(note);
+}
+
+function recordRunModeAttempt(runMetrics, mode) {
+    if (!runMetrics || !mode || mode === "unknown") {
+        return;
+    }
+    if (!Array.isArray(runMetrics.attemptedModes)) {
+        runMetrics.attemptedModes = [];
+    }
+    if (runMetrics.attemptedModes.includes(mode)) {
+        return;
+    }
+    runMetrics.attemptedModes.push(mode);
 }
 
 async function safelyDeleteFile(ffmpeg, path) {
@@ -1778,6 +1937,14 @@ function formatDurationMs(ms) {
 
 function withAssetVersion(url) {
     return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(ASSET_VERSION)}`;
+}
+
+function truncateMessage(text, maxLength) {
+    const safeText = String(text || "");
+    if (safeText.length <= maxLength) {
+        return safeText;
+    }
+    return `${safeText.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function clamp(value, min, max) {
