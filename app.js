@@ -4,11 +4,16 @@ import { fetchFile } from "./vendor/ffmpeg/util/index.js";
 const elements = {
     engineBadge: document.getElementById("engineBadge"),
     dropZone: document.getElementById("dropZone"),
+    dropTitle: document.getElementById("dropTitle"),
+    dropNote: document.getElementById("dropNote"),
     fileInput: document.getElementById("fileInput"),
     fileSummary: document.getElementById("fileSummary"),
     maxSizeInput: document.getElementById("maxSizeInput"),
     minimizeBtn: document.getElementById("minimizeBtn"),
     downloadBtn: document.getElementById("downloadBtn"),
+    progressWrap: document.getElementById("progressWrap"),
+    progressBar: document.getElementById("progressBar"),
+    progressMeta: document.getElementById("progressMeta"),
     status: document.getElementById("status"),
     result: document.getElementById("result"),
     originalSize: document.getElementById("originalSize"),
@@ -32,6 +37,10 @@ const state = {
     lastProgressUpdateAt: 0,
     lastRunMetrics: null,
     disableMtForSession: false,
+    progressStartedAtMs: 0,
+    progressLabel: "",
+    progressPercent: null,
+    progressTickId: null,
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -42,6 +51,13 @@ const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const ST_LARGE_THRESHOLD_BYTES = 24 * 1024 * 1024;
 const REMUX_MARGIN_RATIO = 1.18;
 const ASSET_VERSION = "20260306-2";
+const PROGRESS_TICK_INTERVAL_MS = 250;
+const DROP_TITLE_DEFAULT = "Drop file here";
+const DROP_NOTE_DEFAULT = "or click to select a video/image";
+const DROP_TITLE_READY = "File selected";
+const DROP_NOTE_READY = "Click Minimize to start processing";
+const DROP_TITLE_PROCESSING = "Minimizing in progress";
+const DROP_NOTE_PROCESSING = "Please wait until the current run finishes";
 
 init();
 
@@ -68,6 +84,9 @@ function init() {
     }
 
     setEngineBadge("loading", "Engine: Loading");
+    renderFileSummary();
+    updateDropZoneState();
+    resetProgressState();
     setStatus("Preparing local engine... Drop a video or image to start.", "info");
     warmupFfmpeg();
 }
@@ -101,11 +120,17 @@ function onFileInputChange(event) {
 
 function onDragOver(event) {
     event.preventDefault();
+    if (state.processing) {
+        return;
+    }
     elements.dropZone.classList.add("active");
 }
 
 function onDragLeave(event) {
     event.preventDefault();
+    if (state.processing) {
+        return;
+    }
     elements.dropZone.classList.remove("active");
 }
 
@@ -125,8 +150,9 @@ function onDrop(event) {
 function setInputFile(file) {
     state.inputFile = file;
     clearOutput();
+    renderFileSummary();
+    updateDropZoneState();
     const typeLabel = detectInputType(file);
-    elements.fileSummary.textContent = `${file.name} (${formatBytes(file.size)})`;
 
     if (typeLabel === "unsupported") {
         setStatus("Unsupported file type. Use a video or image file.", "error");
@@ -143,6 +169,45 @@ function setInputFile(file) {
     setStatus(`Ready to minimize ${typeLabel}.`, "info");
 }
 
+function renderFileSummary() {
+    elements.fileSummary.classList.remove("ready", "processing");
+    elements.fileSummary.replaceChildren();
+
+    if (!state.inputFile) {
+        elements.fileSummary.textContent = "No file selected.";
+        return;
+    }
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "file-name";
+    nameSpan.textContent = state.inputFile.name;
+
+    const sizeSpan = document.createElement("span");
+    sizeSpan.className = "file-size";
+    sizeSpan.textContent = formatBytes(state.inputFile.size);
+
+    elements.fileSummary.append(nameSpan, sizeSpan);
+    elements.fileSummary.classList.add(state.processing ? "processing" : "ready");
+}
+
+function updateDropZoneState() {
+    elements.dropZone.classList.remove("active", "has-file", "processing");
+    if (state.processing) {
+        elements.dropZone.classList.add("processing");
+        elements.dropTitle.textContent = DROP_TITLE_PROCESSING;
+        elements.dropNote.textContent = DROP_NOTE_PROCESSING;
+        return;
+    }
+    if (state.inputFile) {
+        elements.dropZone.classList.add("has-file");
+        elements.dropTitle.textContent = DROP_TITLE_READY;
+        elements.dropNote.textContent = DROP_NOTE_READY;
+        return;
+    }
+    elements.dropTitle.textContent = DROP_TITLE_DEFAULT;
+    elements.dropNote.textContent = DROP_NOTE_DEFAULT;
+}
+
 function clearOutput() {
     state.outputBlob = null;
     state.outputFilename = "";
@@ -156,6 +221,7 @@ function clearOutput() {
     elements.outputSize.textContent = "-";
     elements.savedSize.textContent = "-";
     elements.outputName.textContent = "-";
+    elements.result.classList.remove("loading");
 }
 
 async function onMinimizeClick() {
@@ -178,6 +244,8 @@ async function onMinimizeClick() {
 
     setProcessing(true);
     clearOutput();
+    setPendingResultState(inputType, state.inputFile);
+    startProgressTracker(inputType === "video" ? "Minimizing video" : "Minimizing image");
     const runMetrics = startRunMetrics(inputType);
     state.lastRunMetrics = runMetrics;
 
@@ -204,8 +272,10 @@ async function onMinimizeClick() {
     } catch (error) {
         endRunMetrics(runMetrics, "failed");
         const message = error instanceof Error ? error.message : "Minimize failed.";
+        setFailedResultState();
         setStatus(message, "error");
     } finally {
+        stopProgressTracker();
         setProcessing(false);
     }
 }
@@ -223,6 +293,7 @@ function setOutputResult(result, targetBytes) {
     elements.outputSize.textContent = formatBytes(outputSize);
     elements.savedSize.textContent = formatBytes(saved);
     elements.outputName.textContent = state.outputFilename;
+    elements.result.classList.remove("loading");
     elements.result.hidden = false;
     elements.downloadBtn.disabled = false;
 
@@ -235,12 +306,94 @@ function setOutputResult(result, targetBytes) {
     }
 }
 
+function setPendingResultState(inputType, file) {
+    elements.result.hidden = false;
+    elements.result.classList.add("loading");
+    elements.originalSize.textContent = formatBytes(file.size);
+    elements.outputSize.textContent = "Working...";
+    elements.savedSize.textContent = "Working...";
+    if (inputType === "video") {
+        elements.outputName.textContent = `${getBaseName(file.name)}-min.mov (pending)`;
+    } else {
+        elements.outputName.textContent = "Pending...";
+    }
+}
+
+function setFailedResultState() {
+    if (state.inputFile) {
+        elements.originalSize.textContent = formatBytes(state.inputFile.size);
+    }
+    elements.outputSize.textContent = "-";
+    elements.savedSize.textContent = "-";
+    elements.outputName.textContent = "-";
+    elements.result.classList.remove("loading");
+}
+
+function startProgressTracker(initialLabel) {
+    state.progressStartedAtMs = performance.now();
+    state.progressLabel = initialLabel;
+    state.progressPercent = null;
+    elements.progressWrap.hidden = false;
+    renderProgressState();
+
+    if (state.progressTickId) {
+        globalThis.clearInterval(state.progressTickId);
+    }
+    state.progressTickId = globalThis.setInterval(() => {
+        renderProgressState();
+    }, PROGRESS_TICK_INTERVAL_MS);
+}
+
+function stopProgressTracker() {
+    if (state.progressTickId) {
+        globalThis.clearInterval(state.progressTickId);
+        state.progressTickId = null;
+    }
+    resetProgressState();
+}
+
+function setProgressUpdate(label, percent = null) {
+    if (!state.processing) {
+        return;
+    }
+    state.progressLabel = label;
+    state.progressPercent = Number.isFinite(percent) ? clamp(percent, 0, 100) : null;
+    renderProgressState();
+}
+
+function renderProgressState() {
+    if (elements.progressWrap.hidden) {
+        return;
+    }
+    const elapsedSeconds = Math.max(0, (performance.now() - state.progressStartedAtMs) / 1000);
+    const elapsedText = `Elapsed ${formatElapsed(elapsedSeconds)}`;
+    const percentText = Number.isFinite(state.progressPercent) ? `${Math.round(state.progressPercent)}%` : "Estimating...";
+    elements.progressMeta.textContent = `${state.progressLabel} • ${percentText} • ${elapsedText}`;
+
+    if (Number.isFinite(state.progressPercent)) {
+        elements.progressBar.value = state.progressPercent;
+    } else {
+        elements.progressBar.removeAttribute("value");
+    }
+}
+
+function resetProgressState() {
+    state.progressStartedAtMs = 0;
+    state.progressLabel = "";
+    state.progressPercent = null;
+    elements.progressWrap.hidden = true;
+    elements.progressBar.removeAttribute("value");
+    elements.progressMeta.textContent = "Preparing...";
+}
+
 function setProcessing(isProcessing) {
     state.processing = isProcessing;
     elements.minimizeBtn.disabled = isProcessing || !state.inputFile || detectInputType(state.inputFile) === "unsupported";
     elements.downloadBtn.disabled = isProcessing || !state.outputBlob;
     elements.fileInput.disabled = isProcessing;
     elements.maxSizeInput.disabled = isProcessing;
+    renderFileSummary();
+    updateDropZoneState();
 }
 
 function setStatus(text, kind) {
@@ -336,6 +489,7 @@ async function forceSingleThreadRuntime() {
     state.ffmpegMode = "unknown";
     state.ffmpegPreferredMode = "unknown";
     setEngineBadge("loading", "Engine: Switching to ST...");
+    setProgressUpdate("Switching engine to ST", null);
     await getFfmpeg(ST_LARGE_THRESHOLD_BYTES);
 }
 
@@ -379,9 +533,11 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
         });
 
         const etaBand = estimateVideoEtaBand(durationSeconds, state.ffmpegMode);
+        setProgressUpdate(`Minimizing video (attempt 1) • ${etaBand}`, null);
         setStatus(`Minimizing video (attempt 1)... ${etaBand}. Browser FFmpeg is slower than native.`, "info");
 
         if (shouldTryRemuxOnly(file, targetBytes)) {
+            setProgressUpdate("Trying fast remux shortcut", null);
             beginStage(runMetrics, "remux");
             const remuxAttempt = await runVideoRemuxAttempt({
                 ffmpeg,
@@ -395,6 +551,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
 
             if (remuxAttempt && remuxAttempt.blob.size <= targetBytes) {
                 appendMetricNote(runMetrics, "remux-only");
+                setProgressUpdate("Remux shortcut complete", 100);
                 return {
                     blob: remuxAttempt.blob,
                     filename: outputFilename,
@@ -477,6 +634,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         }
         state.lastProgressUpdateAt = now;
         const percent = Math.min(100, Math.max(0, Math.round(progress * 100)));
+        setProgressUpdate(`Minimizing video (${attemptLabel})`, percent);
         setStatus(`Minimizing video (${attemptLabel})... ${percent}% (approx.)`, "info");
     };
 
@@ -929,6 +1087,7 @@ async function getFfmpeg(fileSizeBytes = null) {
 
 async function minimizeImage(file, targetBytes, runMetrics) {
     beginStage(runMetrics, "image-read");
+    setProgressUpdate("Reading image", 5);
     setStatus("Reading image...", "info");
     const bitmap = await createImageBitmap(file);
     endStage(runMetrics, "image-read");
@@ -968,8 +1127,10 @@ async function minimizeImage(file, targetBytes, runMetrics) {
                         bestMimeType = mimeType;
                     }
                     const percent = Math.round(((scaleIndex + 1) / scaleSteps.length) * 100);
+                    setProgressUpdate("Minimizing image", percent);
                     setStatus(`Minimizing image... ${percent}%`, "info");
                     if (blob.size <= targetBytes) {
+                        setProgressUpdate("Image minimize complete", 100);
                         endStage(runMetrics, "image-encode", {
                             outputBytes: blob.size,
                             mimeType,
@@ -1174,6 +1335,13 @@ function formatDuration(seconds) {
     if (hours > 0) {
         return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
     }
+    return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatElapsed(seconds) {
+    const wholeSeconds = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(wholeSeconds / 60);
+    const secs = wholeSeconds % 60;
     return `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 

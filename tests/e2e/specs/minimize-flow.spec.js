@@ -111,17 +111,40 @@ test("video flow converts to mov and enables download", async ({ page }) => {
 
     const minimizeBtn = page.locator("#minimizeBtn");
     const downloadBtn = page.locator("#downloadBtn");
+    const progressWrap = page.locator("#progressWrap");
 
     await expect(minimizeBtn).toBeEnabled();
     await expect(downloadBtn).toBeDisabled();
+    await expect(page.locator("#dropTitle")).toContainText("File selected");
+    await expect(page.locator("#originalSize")).toContainText("-");
 
     captureRequests = true;
     await minimizeBtn.click();
+    await page.waitForTimeout(150);
+    const interimUi = await page.evaluate(() => ({
+        status: document.querySelector("#status")?.textContent || "",
+        progressVisible: !(document.querySelector("#progressWrap")?.hasAttribute("hidden")),
+        dropTitle: document.querySelector("#dropTitle")?.textContent || "",
+        originalSize: document.querySelector("#originalSize")?.textContent || "",
+        outputSize: document.querySelector("#outputSize")?.textContent || "",
+        savedSize: document.querySelector("#savedSize")?.textContent || "",
+        progressMeta: document.querySelector("#progressMeta")?.textContent || "",
+    }));
+    if (interimUi.status.includes("Minimizing")) {
+        expect(interimUi.progressVisible).toBe(true);
+        expect(interimUi.dropTitle).toContain("Minimizing in progress");
+        expect(interimUi.originalSize).not.toBe("-");
+        expect(interimUi.outputSize).toContain("Working...");
+        expect(interimUi.savedSize).toContain("Working...");
+        expect(interimUi.progressMeta).toContain("Elapsed");
+    }
 
     await expect(page.locator("#status")).toContainText("Done.", { timeout: 120000 });
     await expect(page.locator("#engineBadge")).toContainText("Engine: Ready");
     await expect(downloadBtn).toBeEnabled();
     await expect(page.locator("#outputName")).toContainText(".mov");
+    await expect(progressWrap).toBeHidden();
+    await expect(page.locator("#dropTitle")).toContainText("File selected");
     expect(minimizeRequests).toBe(0);
 
     const metrics = await page.evaluate(() => window.__mediaMinimizerDebug.getLastRunMetrics());

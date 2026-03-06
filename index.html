@@ -20,8 +20,8 @@
         <section class="panel">
             <label id="dropZone" class="drop-zone" for="fileInput">
                 <input id="fileInput" type="file" accept="video/*,image/*" hidden>
-                <span class="drop-title">Drop file here</span>
-                <span class="drop-note">or click to select a video/image</span>
+                <span id="dropTitle" class="drop-title">Drop file here</span>
+                <span id="dropNote" class="drop-note">or click to select a video/image</span>
             </label>
 
             <div id="fileSummary" class="file-summary">No file selected.</div>
@@ -33,6 +33,11 @@
                 </label>
                 <button id="minimizeBtn" class="btn btn-primary" disabled>Minimize</button>
                 <button id="downloadBtn" class="btn btn-secondary" disabled>Download</button>
+            </div>
+
+            <div id="progressWrap" class="progress-wrap" hidden>
+                <progress id="progressBar" class="progress-bar" max="100"></progress>
+                <div id="progressMeta" class="progress-meta">Preparing...</div>
             </div>
 
             <div id="status" class="notice info">Drop a video or image to start.</div>
