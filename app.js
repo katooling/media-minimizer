@@ -1,3 +1,6 @@
+import { FFmpeg } from "./vendor/ffmpeg/ffmpeg/index.js";
+import { fetchFile } from "./vendor/ffmpeg/util/index.js";
+
 const elements = {
     dropZone: document.getElementById("dropZone"),
     fileInput: document.getElementById("fileInput"),
@@ -22,7 +25,7 @@ const state = {
     ffmpeg: null,
     ffmpegLoader: null,
     ffmpegProgressCb: null,
-    ffmpegFetchFile: null,
+    ffmpegPreloadDone: false,
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -37,7 +40,23 @@ function init() {
     elements.dropZone.addEventListener("drop", onDrop);
     elements.minimizeBtn.addEventListener("click", onMinimizeClick);
     elements.downloadBtn.addEventListener("click", onDownloadClick);
-    setStatus("Drop a video or image to start.", "info");
+    setStatus("Preparing local engine... Drop a video or image to start.", "info");
+    warmupFfmpeg();
+}
+
+async function warmupFfmpeg() {
+    try {
+        await getFfmpeg();
+        state.ffmpegPreloadDone = true;
+        if (!state.processing && !state.inputFile) {
+            setStatus("Ready. Drop a video or image to start.", "info");
+        }
+    } catch (error) {
+        state.ffmpegPreloadDone = false;
+        if (!state.inputFile) {
+            setStatus("Image minimize is ready. Video engine failed to preload; retry on minimize.", "error");
+        }
+    }
 }
 
 function onFileInputChange(event) {
@@ -204,7 +223,7 @@ function detectInputType(file) {
 }
 
 async function minimizeVideo(file, targetBytes) {
-    setStatus("Loading FFmpeg core (first run may take a while)...", "info");
+    setStatus("Starting local video engine...", "info");
     const ffmpeg = await getFfmpeg();
     state.ffmpegProgressCb = null;
 
@@ -213,7 +232,7 @@ async function minimizeVideo(file, targetBytes) {
     const outputPath = "output.mov";
     const outputFilename = `${getBaseName(file.name)}-min.mov`;
 
-    await ffmpeg.writeFile(inputPath, await state.ffmpegFetchFile(file));
+    await ffmpeg.writeFile(inputPath, await fetchFile(file));
 
     const attempts = [
         { crf: 24, audioKbps: 128 },
@@ -289,31 +308,34 @@ async function getFfmpeg() {
 
     if (!state.ffmpegLoader) {
         state.ffmpegLoader = (async () => {
-            const [{ FFmpeg }, { fetchFile, toBlobURL }] = await Promise.all([
-                import("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js"),
-                import("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js"),
-            ]);
-
             const ffmpeg = new FFmpeg();
-            state.ffmpegFetchFile = fetchFile;
             ffmpeg.on("progress", ({ progress }) => {
                 if (typeof state.ffmpegProgressCb === "function") {
                     state.ffmpegProgressCb(progress);
                 }
             });
 
-            const baseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+            const classWorkerURL = new URL("./vendor/ffmpeg/ffmpeg/worker.js", import.meta.url).href;
+            const coreURL = new URL("./vendor/ffmpeg/core/ffmpeg-core.js", import.meta.url).href;
+            const wasmURL = new URL("./vendor/ffmpeg/core/ffmpeg-core.wasm", import.meta.url).href;
+
             await ffmpeg.load({
-                coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-                wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+                classWorkerURL,
+                coreURL,
+                wasmURL,
             });
 
             state.ffmpeg = ffmpeg;
             return ffmpeg;
         })();
     }
-
-    return state.ffmpegLoader;
+    try {
+        return await state.ffmpegLoader;
+    } catch (error) {
+        state.ffmpegLoader = null;
+        state.ffmpeg = null;
+        throw error;
+    }
 }
 
 async function minimizeImage(file, targetBytes) {

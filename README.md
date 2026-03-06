@@ -20,6 +20,7 @@ but with a simple browser UI:
 - Image input (`image/*`) -> outputs optimized image using browser canvas.
 - Unsupported file types are rejected inline.
 - No backend and no upload: processing is local in your browser tab.
+- FFmpeg assets are vendored locally under `vendor/ffmpeg` (no CDN dependency).
 
 ## Quick start
 
@@ -46,5 +47,4 @@ This test covers: file select -> `Minimize` enabled -> processing -> `Download` 
 
 - `Max size (MB)` defaults to `10`.
 - For video, the app runs a balanced encode profile and retries with stronger compression if still above target.
-- First video run is slower because ffmpeg core assets are loaded.
-- Internet is required to fetch ffmpeg WASM assets from CDN unless you vendor them locally.
+- FFmpeg engine is preloaded at startup. After preload completes, `Minimize` runs without new network requests.
