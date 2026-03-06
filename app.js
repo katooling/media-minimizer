@@ -31,6 +31,7 @@ const state = {
     ffmpegPreferredMode: "unknown",
     lastProgressUpdateAt: 0,
     lastRunMetrics: null,
+    disableMtForSession: false,
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -40,6 +41,7 @@ const TARGET_PAYLOAD_RATIO = 0.96;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const ST_LARGE_THRESHOLD_BYTES = 24 * 1024 * 1024;
 const REMUX_MARGIN_RATIO = 1.18;
+const ASSET_VERSION = "20260306-2";
 
 init();
 
@@ -182,7 +184,18 @@ async function onMinimizeClick() {
     try {
         let result;
         if (inputType === "video") {
-            result = await minimizeVideo(state.inputFile, targetBytes, runMetrics);
+            try {
+                result = await minimizeVideo(state.inputFile, targetBytes, runMetrics);
+            } catch (error) {
+                if (shouldRetryWithSingleThread(error)) {
+                    appendMetricNote(runMetrics, "mt-runtime-fallback");
+                    setStatus("MT engine failed. Retrying with ST engine...", "info");
+                    await forceSingleThreadRuntime();
+                    result = await minimizeVideo(state.inputFile, targetBytes, runMetrics);
+                } else {
+                    throw error;
+                }
+            }
         } else {
             result = await minimizeImage(state.inputFile, targetBytes, runMetrics);
         }
@@ -299,6 +312,31 @@ function detectInputType(file) {
         return "image";
     }
     return "unsupported";
+}
+
+function shouldRetryWithSingleThread(error) {
+    if (state.ffmpegMode !== "mt-fast" || state.disableMtForSession) {
+        return false;
+    }
+    const message = error instanceof Error ? error.message : String(error || "");
+    return /function signature mismatch|runtimeerror|worker\.onerror/i.test(message);
+}
+
+async function forceSingleThreadRuntime() {
+    state.disableMtForSession = true;
+    if (state.ffmpeg) {
+        try {
+            state.ffmpeg.terminate();
+        } catch (error) {
+            // Ignore termination errors when recovering from MT failure.
+        }
+    }
+    state.ffmpeg = null;
+    state.ffmpegLoader = null;
+    state.ffmpegMode = "unknown";
+    state.ffmpegPreferredMode = "unknown";
+    setEngineBadge("loading", "Engine: Switching to ST...");
+    await getFfmpeg(ST_LARGE_THRESHOLD_BYTES);
 }
 
 async function minimizeVideo(file, targetBytes, runMetrics) {
@@ -512,8 +550,6 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         profile.preset,
         "-tune",
         "zerolatency",
-        "-threads",
-        String(profile.threads),
         "-b:v",
         `${profile.videoKbps}k`,
         "-maxrate",
@@ -624,7 +660,6 @@ function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode, sourceH
         audioMode,
         sourceHeight,
         runtimeMode,
-        threads: computeEncoderThreads(runtimeMode),
         maxHeight,
         maxFps,
         maxrateKbps: Math.max(videoKbps + 80, Math.floor(videoKbps * 1.18)),
@@ -728,18 +763,6 @@ async function probeVideoMetadataFromBrowser(file) {
     }
 }
 
-function computeEncoderThreads(runtimeMode) {
-    if (runtimeMode !== "mt-fast") {
-        return 1;
-    }
-
-    const hardwareConcurrency = Number(globalThis.navigator?.hardwareConcurrency || 0);
-    if (!Number.isFinite(hardwareConcurrency) || hardwareConcurrency <= 0) {
-        return 4;
-    }
-    return clamp(Math.floor(hardwareConcurrency * 0.75), 2, 8);
-}
-
 async function probeDurationSeconds(ffmpeg, inputPath, outputPath) {
     await safelyDeleteFile(ffmpeg, outputPath);
     const exitCode = await ffmpeg.ffprobe([
@@ -813,23 +836,23 @@ async function cleanupVideoInput(ffmpeg, inputHandle) {
 
 function getRuntimeModePriority(isIsolated, fileSizeBytes = null) {
     const prefersLarge = !Number.isFinite(fileSizeBytes) || fileSizeBytes >= ST_LARGE_THRESHOLD_BYTES;
-    if (isIsolated) {
+    if (isIsolated && !state.disableMtForSession) {
         return prefersLarge ? ["mt-fast", "st-large", "st-lite"] : ["mt-fast", "st-lite", "st-large"];
     }
     return prefersLarge ? ["st-large", "st-lite"] : ["st-lite", "st-large"];
 }
 
 function createRuntimeCandidate(mode) {
-    const classWorkerURL = new URL("./vendor/ffmpeg/ffmpeg/worker.js", import.meta.url).href;
+    const classWorkerURL = withAssetVersion(new URL("./vendor/ffmpeg/ffmpeg/worker.js", import.meta.url).href);
 
     if (mode === "mt-fast") {
         return {
             mode,
             loadOptions: {
                 classWorkerURL,
-                coreURL: new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.js", import.meta.url).href,
-                wasmURL: new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.wasm", import.meta.url).href,
-                workerURL: new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.worker.js", import.meta.url).href,
+                coreURL: withAssetVersion(new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.js", import.meta.url).href),
+                wasmURL: withAssetVersion(new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.wasm", import.meta.url).href),
+                workerURL: withAssetVersion(new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.worker.js", import.meta.url).href),
             },
         };
     }
@@ -839,8 +862,8 @@ function createRuntimeCandidate(mode) {
             mode,
             loadOptions: {
                 classWorkerURL,
-                coreURL: new URL("./vendor/ffmpeg/core-st-lite/ffmpeg-core.js", import.meta.url).href,
-                wasmURL: new URL("./vendor/ffmpeg/core-st-lite/ffmpeg-core.wasm", import.meta.url).href,
+                coreURL: withAssetVersion(new URL("./vendor/ffmpeg/core-st-lite/ffmpeg-core.js", import.meta.url).href),
+                wasmURL: withAssetVersion(new URL("./vendor/ffmpeg/core-st-lite/ffmpeg-core.wasm", import.meta.url).href),
             },
         };
     }
@@ -849,8 +872,8 @@ function createRuntimeCandidate(mode) {
         mode,
         loadOptions: {
             classWorkerURL,
-            coreURL: new URL("./vendor/ffmpeg/core-st-large/ffmpeg-core.js", import.meta.url).href,
-            wasmURL: new URL("./vendor/ffmpeg/core-st-large/ffmpeg-core.wasm", import.meta.url).href,
+            coreURL: withAssetVersion(new URL("./vendor/ffmpeg/core-st-large/ffmpeg-core.js", import.meta.url).href),
+            wasmURL: withAssetVersion(new URL("./vendor/ffmpeg/core-st-large/ffmpeg-core.wasm", import.meta.url).href),
         },
     };
 }
@@ -1162,6 +1185,10 @@ function formatDurationMs(ms) {
         return `${Math.round(ms)}ms`;
     }
     return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function withAssetVersion(url) {
+    return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(ASSET_VERSION)}`;
 }
 
 function clamp(value, min, max) {

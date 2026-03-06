@@ -44,13 +44,16 @@ Video path uses fast defaults:
 - Browser video dimensions are used to avoid unnecessary scale filters.
 - One-pass target-bitrate encode, optional bounded fallback only if needed.
 - `ultrafast` preset.
-- `zerolatency` tune + runtime-aware thread count (`MT` uses more worker threads).
+- `zerolatency` tune.
 - Progress updates throttled to reduce UI overhead.
 - Audio strategy adapts: copy when likely safe, otherwise AAC re-encode.
 - Auto caps fps/resolution at low bitrates.
 - Short-circuits:
   - passthrough when already `.mov` and under target
   - broader remux-only attempt window before full transcode
+- Runtime hardening:
+  - if MT runtime crashes (for example function-signature mismatch), app auto-retries once in ST mode
+  - FFmpeg core asset URLs are versioned to avoid mixed-cache core files after deploy
 
 The app also records stage timings (`load`, `input`, `metadata`, `encode`, `output-read`, total) and exposes them via `window.__mediaMinimizerDebug.getLastRunMetrics()`.
 

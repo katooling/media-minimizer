@@ -1,3 +1,4 @@
+const fs = require("fs");
 const path = require("path");
 const { test, expect } = require("@playwright/test");
 
@@ -84,6 +85,7 @@ test("video flow converts to mov and enables download", async ({ page }) => {
     test.setTimeout(180000);
     let captureRequests = false;
     let minimizeRequests = 0;
+    const pageErrors = [];
     page.on("request", (request) => {
         if (!captureRequests) {
             return;
@@ -92,12 +94,20 @@ test("video flow converts to mov and enables download", async ({ page }) => {
             minimizeRequests += 1;
         }
     });
+    page.on("pageerror", (error) => {
+        pageErrors.push(String(error?.message || error));
+    });
 
     await page.goto("/");
     await waitForEngineReady(page);
 
     const fixturePath = path.resolve(__dirname, "..", "fixtures", "sample.mp4");
-    await page.locator("#fileInput").setInputFiles(fixturePath);
+    await page.locator("#fileInput").setInputFiles({
+        name: "sample-force-encode.mov",
+        mimeType: "video/quicktime",
+        buffer: fs.readFileSync(fixturePath),
+    });
+    await page.locator("#maxSizeInput").fill("0.001");
 
     const minimizeBtn = page.locator("#minimizeBtn");
     const downloadBtn = page.locator("#downloadBtn");
@@ -119,6 +129,8 @@ test("video flow converts to mov and enables download", async ({ page }) => {
     expect(metrics?.stages?.load?.ms).toBeGreaterThanOrEqual(0);
     expect(metrics?.stages?.input?.ms).toBeGreaterThanOrEqual(0);
     expect(metrics?.stages?.metadata?.ms).toBeGreaterThanOrEqual(0);
-    const transcodeStageMs = metrics?.stages?.encode?.ms ?? metrics?.stages?.remux?.ms;
-    expect(transcodeStageMs).toBeGreaterThanOrEqual(0);
+    expect(metrics?.stages?.encode?.ms).toBeGreaterThanOrEqual(0);
+    expect(metrics?.notes || []).not.toContain("remux-only");
+    const runtimeFailures = pageErrors.filter((message) => /function signature mismatch|runtimeerror/i.test(message));
+    expect(runtimeFailures).toHaveLength(0);
 });
