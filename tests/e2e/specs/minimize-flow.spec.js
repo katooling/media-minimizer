@@ -6,6 +6,16 @@ async function waitForEngineReady(page) {
     await expect(page.locator("#engineBadge")).toContainText("Engine: Ready", { timeout: 120000 });
 }
 
+async function uploadForcedEncodeVideo(page) {
+    const fixturePath = path.resolve(__dirname, "..", "fixtures", "sample.mp4");
+    await page.locator("#fileInput").setInputFiles({
+        name: "sample-force-encode.mov",
+        mimeType: "video/quicktime",
+        buffer: fs.readFileSync(fixturePath),
+    });
+    await page.locator("#maxSizeInput").fill("0.001");
+}
+
 test("runtime mode priority helper covers isolated and non-isolated", async ({ page }) => {
     await page.goto("/");
     await waitForEngineReady(page);
@@ -101,13 +111,7 @@ test("video flow converts to mov and enables download", async ({ page }) => {
     await page.goto("/");
     await waitForEngineReady(page);
 
-    const fixturePath = path.resolve(__dirname, "..", "fixtures", "sample.mp4");
-    await page.locator("#fileInput").setInputFiles({
-        name: "sample-force-encode.mov",
-        mimeType: "video/quicktime",
-        buffer: fs.readFileSync(fixturePath),
-    });
-    await page.locator("#maxSizeInput").fill("0.001");
+    await uploadForcedEncodeVideo(page);
 
     const minimizeBtn = page.locator("#minimizeBtn");
     const downloadBtn = page.locator("#downloadBtn");
@@ -156,4 +160,83 @@ test("video flow converts to mov and enables download", async ({ page }) => {
     expect(metrics?.notes || []).not.toContain("remux-only");
     const runtimeFailures = pageErrors.filter((message) => /function signature mismatch|runtimeerror/i.test(message));
     expect(runtimeFailures).toHaveLength(0);
+
+    const trace = await page.evaluate(() => window.__mediaMinimizerDebug.getLastTrace());
+    const events = trace.map((entry) => entry.event);
+    expect(events).toContain("run-start");
+    expect(events).toContain("engine-load");
+    expect(events).toContain("input-ready");
+    expect(events).toContain("metadata-ready");
+    expect(events).toContain("encode-start");
+    expect(events).toContain("output-read");
+    expect(events).toContain("run-end");
+});
+
+test("mock video no-progress logs still completes without hang", async ({ page }) => {
+    test.setTimeout(90000);
+    await page.goto("/?debug=1&ffmpegMock=no-progress-complete&stallMs=3000");
+    await waitForEngineReady(page);
+    await uploadForcedEncodeVideo(page);
+
+    await page.locator("#minimizeBtn").click();
+    await expect(page.locator("#status")).toContainText("Done.", { timeout: 45000 });
+    await expect(page.locator("#downloadBtn")).toBeEnabled();
+
+    const debug = await page.evaluate(() => ({
+        trace: window.__mediaMinimizerDebug.getLastTrace(),
+        logs: window.__mediaMinimizerDebug.getLastFfmpegLogs(),
+        live: window.__mediaMinimizerDebug.getLiveState(),
+    }));
+
+    expect(debug.trace.some((entry) => entry.event === "encode-log")).toBe(true);
+    expect(debug.trace.some((entry) => entry.event === "run-end" && entry.status === "success")).toBe(true);
+    expect(debug.logs.length).toBeGreaterThan(0);
+    expect(debug.live.processing).toBe(false);
+});
+
+test("mock stall triggers fallback once then succeeds", async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto("/?debug=1&ffmpegMock=mt-stall-fallback&stallMs=2500");
+    await waitForEngineReady(page);
+    await uploadForcedEncodeVideo(page);
+
+    await page.locator("#minimizeBtn").click();
+    await expect(page.locator("#status")).toContainText("Done.", { timeout: 70000 });
+    await expect(page.locator("#downloadBtn")).toBeEnabled();
+
+    const debug = await page.evaluate(() => ({
+        trace: window.__mediaMinimizerDebug.getLastTrace(),
+        metrics: window.__mediaMinimizerDebug.getLastRunMetrics(),
+    }));
+
+    expect(
+        debug.trace.some(
+            (entry) =>
+                entry.event === "error" &&
+                /(encode-stalled|ENCODE_STALLED)/.test(String(entry.eventCode || ""))
+        )
+    ).toBe(true);
+    expect(debug.metrics?.notes || []).toContain("mt-runtime-fallback");
+    expect(debug.trace.some((entry) => entry.event === "run-end" && entry.status === "success")).toBe(true);
+});
+
+test("mock stall without recovery fails explicitly", async ({ page }) => {
+    test.setTimeout(90000);
+    await page.goto("/?debug=1&ffmpegMock=stall&stallMs=2500");
+    await waitForEngineReady(page);
+    await uploadForcedEncodeVideo(page);
+
+    await page.locator("#minimizeBtn").click();
+    await expect(page.locator("#status")).toContainText("Encode stalled", { timeout: 45000 });
+    await expect(page.locator("#downloadBtn")).toBeDisabled();
+
+    const trace = await page.evaluate(() => window.__mediaMinimizerDebug.getLastTrace());
+    expect(
+        trace.some(
+            (entry) =>
+                entry.event === "error" &&
+                /(encode-stalled|ENCODE_STALLED)/.test(String(entry.eventCode || ""))
+        )
+    ).toBe(true);
+    expect(trace.some((entry) => entry.event === "run-end" && entry.status === "failed")).toBe(true);
 });

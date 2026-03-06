@@ -41,6 +41,15 @@ const state = {
     progressLabel: "",
     progressPercent: null,
     progressTickId: null,
+    trace: [],
+    lastTrace: [],
+    ffmpegLogs: [],
+    lastFfmpegLogs: [],
+    currentStage: "idle",
+    stageStartedAtMs: 0,
+    runStartedAtMs: 0,
+    lastProgressEventAt: 0,
+    lastLogEventAt: 0,
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -52,6 +61,17 @@ const ST_LARGE_THRESHOLD_BYTES = 24 * 1024 * 1024;
 const REMUX_MARGIN_RATIO = 1.18;
 const ASSET_VERSION = "20260306-2";
 const PROGRESS_TICK_INTERVAL_MS = 250;
+const debugParams = typeof globalThis.location !== "undefined" ? new URLSearchParams(globalThis.location.search) : new URLSearchParams("");
+const DEBUG_MODE = debugParams.get("debug") === "1";
+const DEBUG_MOCK_MODE = debugParams.get("ffmpegMock") || "";
+const DEBUG_TRACE_LIMIT = 300;
+const DEBUG_LOG_LIMIT = 250;
+const parsedDebugStallMs = Number.parseInt(debugParams.get("stallMs") || "", 10);
+const parsedDebugTimeoutMs = Number.parseInt(debugParams.get("encodeTimeoutMs") || "", 10);
+const ENCODE_STALL_THRESHOLD_MS = Number.isFinite(parsedDebugStallMs) && parsedDebugStallMs > 1000 ? parsedDebugStallMs : 25_000;
+const ENCODE_ACTIVITY_HINT_MS = 5_000;
+const ENCODE_WATCHDOG_INTERVAL_MS = 1_000;
+const ENCODE_TIMEOUT_MS = Number.isFinite(parsedDebugTimeoutMs) && parsedDebugTimeoutMs > 1000 ? parsedDebugTimeoutMs : 12 * 60 * 1000;
 const DROP_TITLE_DEFAULT = "Drop file here";
 const DROP_NOTE_DEFAULT = "or click to select a video/image";
 const DROP_TITLE_READY = "File selected";
@@ -74,6 +94,9 @@ function init() {
         window.__mediaMinimizerDebug = {
             getRuntimeModePriority,
             getLastRunMetrics: () => state.lastRunMetrics,
+            getLastTrace: () => state.lastTrace.map((entry) => ({ ...entry })),
+            getLastFfmpegLogs: () => state.lastFfmpegLogs.map((entry) => ({ ...entry })),
+            getLiveState: () => getLiveDebugState(),
             getRuntimeState: () => ({
                 activeMode: state.ffmpegMode,
                 preferredMode: state.ffmpegPreferredMode,
@@ -246,6 +269,7 @@ async function onMinimizeClick() {
     clearOutput();
     setPendingResultState(inputType, state.inputFile);
     startProgressTracker(inputType === "video" ? "Minimizing video" : "Minimizing image");
+    beginRunTrace(inputType);
     const runMetrics = startRunMetrics(inputType);
     state.lastRunMetrics = runMetrics;
 
@@ -257,7 +281,12 @@ async function onMinimizeClick() {
             } catch (error) {
                 if (shouldRetryWithSingleThread(error)) {
                     appendMetricNote(runMetrics, "mt-runtime-fallback");
-                    setStatus("MT engine failed. Retrying with ST engine...", "info");
+                    const fallbackReason = error?.code === "ENCODE_STALLED" ? "stalled" : "failed";
+                    setStatus(`MT engine ${fallbackReason}. Retrying with ST engine...`, "info");
+                    traceEvent("error", {
+                        eventCode: error?.code || "mt-fallback",
+                        message: error instanceof Error ? error.message : String(error || ""),
+                    });
                     await forceSingleThreadRuntime();
                     result = await minimizeVideo(state.inputFile, targetBytes, runMetrics);
                 } else {
@@ -268,15 +297,22 @@ async function onMinimizeClick() {
             result = await minimizeImage(state.inputFile, targetBytes, runMetrics);
         }
         endRunMetrics(runMetrics, "success");
+        traceEvent("run-end", { status: "success" });
         setOutputResult(result, targetBytes);
     } catch (error) {
         endRunMetrics(runMetrics, "failed");
         const message = error instanceof Error ? error.message : "Minimize failed.";
+        traceEvent("error", {
+            eventCode: error?.code || "run-error",
+            message,
+        });
+        traceEvent("run-end", { status: "failed" });
         setFailedResultState();
         setStatus(message, "error");
     } finally {
         stopProgressTracker();
         setProcessing(false);
+        finalizeRunTrace();
     }
 }
 
@@ -365,9 +401,21 @@ function renderProgressState() {
     if (elements.progressWrap.hidden) {
         return;
     }
-    const elapsedSeconds = Math.max(0, (performance.now() - state.progressStartedAtMs) / 1000);
+    const now = performance.now();
+    const elapsedSeconds = Math.max(0, (now - state.progressStartedAtMs) / 1000);
     const elapsedText = `Elapsed ${formatElapsed(elapsedSeconds)}`;
-    const percentText = Number.isFinite(state.progressPercent) ? `${Math.round(state.progressPercent)}%` : "Estimating...";
+    let percentText = "Estimating...";
+    if (Number.isFinite(state.progressPercent)) {
+        percentText = `${Math.round(state.progressPercent)}%`;
+    } else if (
+        state.processing &&
+        state.currentStage === "encode" &&
+        state.lastLogEventAt > 0 &&
+        now - state.lastLogEventAt <= ENCODE_ACTIVITY_HINT_MS &&
+        (state.lastProgressUpdateAt === 0 || now - state.lastProgressUpdateAt > ENCODE_ACTIVITY_HINT_MS)
+    ) {
+        percentText = "Still processing";
+    }
     elements.progressMeta.textContent = `${state.progressLabel} • ${percentText} • ${elapsedText}`;
 
     if (Number.isFinite(state.progressPercent)) {
@@ -392,6 +440,9 @@ function setProcessing(isProcessing) {
     elements.downloadBtn.disabled = isProcessing || !state.outputBlob;
     elements.fileInput.disabled = isProcessing;
     elements.maxSizeInput.disabled = isProcessing;
+    if (!isProcessing) {
+        setCurrentStage("idle");
+    }
     renderFileSummary();
     updateDropZoneState();
 }
@@ -468,8 +519,14 @@ function detectInputType(file) {
 }
 
 function shouldRetryWithSingleThread(error) {
+    if (DEBUG_MOCK_MODE === "mt-stall-fallback" && error?.code === "ENCODE_STALLED" && !state.disableMtForSession) {
+        return true;
+    }
     if (state.ffmpegMode !== "mt-fast" || state.disableMtForSession) {
         return false;
+    }
+    if (error?.code === "ENCODE_STALLED" || error?.code === "ENCODE_TIMEOUT") {
+        return true;
     }
     const message = error instanceof Error ? error.message : String(error || "");
     return /function signature mismatch|runtimeerror|worker\.onerror/i.test(message);
@@ -477,17 +534,7 @@ function shouldRetryWithSingleThread(error) {
 
 async function forceSingleThreadRuntime() {
     state.disableMtForSession = true;
-    if (state.ffmpeg) {
-        try {
-            state.ffmpeg.terminate();
-        } catch (error) {
-            // Ignore termination errors when recovering from MT failure.
-        }
-    }
-    state.ffmpeg = null;
-    state.ffmpegLoader = null;
-    state.ffmpegMode = "unknown";
-    state.ffmpegPreferredMode = "unknown";
+    terminateFfmpegInstance();
     setEngineBadge("loading", "Engine: Switching to ST...");
     setProgressUpdate("Switching engine to ST", null);
     await getFfmpeg(ST_LARGE_THRESHOLD_BYTES);
@@ -508,15 +555,23 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
         };
     }
 
+    setCurrentStage("engine-load");
+    traceEvent("engine-load", { phase: "start" });
     beginStage(runMetrics, "load");
     const ffmpeg = await getFfmpeg(file.size);
     endStage(runMetrics, "load", { mode: state.ffmpegMode });
+    traceEvent("engine-load", { phase: "end", mode: state.ffmpegMode });
 
     state.ffmpegProgressCb = null;
     state.lastProgressUpdateAt = 0;
+    state.lastProgressEventAt = 0;
+    state.lastLogEventAt = 0;
+    setCurrentStage("input");
     const inputHandle = await prepareVideoInputWithMetrics(ffmpeg, file, runMetrics);
+    traceEvent("input-ready", { strategy: inputHandle.mounted ? "workerfs" : "writeFile" });
 
     try {
+        setCurrentStage("metadata");
         beginStage(runMetrics, "metadata");
         const browserMetadata = await probeVideoMetadataFromBrowser(file);
         let durationSeconds = browserMetadata?.durationSeconds ?? null;
@@ -531,12 +586,18 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             durationSource,
             sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : null,
         });
+        traceEvent("metadata-ready", {
+            durationSeconds: Number.isFinite(durationSeconds) ? Number(durationSeconds.toFixed(3)) : null,
+            durationSource,
+            sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : null,
+        });
 
         const etaBand = estimateVideoEtaBand(durationSeconds, state.ffmpegMode);
         setProgressUpdate(`Minimizing video (attempt 1) • ${etaBand}`, null);
         setStatus(`Minimizing video (attempt 1)... ${etaBand}. Browser FFmpeg is slower than native.`, "info");
 
         if (shouldTryRemuxOnly(file, targetBytes)) {
+            setCurrentStage("remux");
             setProgressUpdate("Trying fast remux shortcut", null);
             beginStage(runMetrics, "remux");
             const remuxAttempt = await runVideoRemuxAttempt({
@@ -552,6 +613,10 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             if (remuxAttempt && remuxAttempt.blob.size <= targetBytes) {
                 appendMetricNote(runMetrics, "remux-only");
                 setProgressUpdate("Remux shortcut complete", 100);
+                traceEvent("encode-end", {
+                    mode: "remux",
+                    outputBytes: remuxAttempt.blob.size,
+                });
                 return {
                     blob: remuxAttempt.blob,
                     filename: outputFilename,
@@ -568,6 +633,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             sourceHeight,
             runtimeMode: state.ffmpegMode,
         });
+        setCurrentStage("encode");
         beginStage(runMetrics, "encode");
         let bestAttempt = await runVideoEncodeAttempt({
             ffmpeg,
@@ -609,6 +675,10 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             outputBytes: bestAttempt.blob.size,
             attempts: bestAttempt.attempts,
         });
+        traceEvent("encode-end", {
+            outputBytes: bestAttempt.blob.size,
+            attempts: bestAttempt.attempts,
+        });
         const effectiveFps = computeEffectiveFps(durationSeconds, encodeMs);
         if (Number.isFinite(effectiveFps)) {
             runMetrics.effectiveEncodeFps = Number(effectiveFps.toFixed(2));
@@ -627,8 +697,19 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
 }
 
 async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, attemptLabel, runMetrics }) {
+    setCurrentStage("encode");
+    traceEvent("encode-start", {
+        attemptLabel,
+        preset: profile.preset,
+        videoKbps: profile.videoKbps,
+        audioMode: profile.audioMode,
+        audioKbps: profile.audioKbps,
+    });
+
+    let lastProgressTraceAt = 0;
     state.ffmpegProgressCb = (progress) => {
         const now = performance.now();
+        state.lastProgressEventAt = now;
         if (progress < 1 && now - state.lastProgressUpdateAt < PROGRESS_UPDATE_INTERVAL_MS) {
             return;
         }
@@ -636,12 +717,25 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         const percent = Math.min(100, Math.max(0, Math.round(progress * 100)));
         setProgressUpdate(`Minimizing video (${attemptLabel})`, percent);
         setStatus(`Minimizing video (${attemptLabel})... ${percent}% (approx.)`, "info");
+        if (now - lastProgressTraceAt >= 1000 || percent >= 100) {
+            lastProgressTraceAt = now;
+            traceEvent("encode-progress", {
+                attemptLabel,
+                percent,
+            });
+        }
     };
 
     await safelyDeleteFile(ffmpeg, outputPath);
     let activeProfile = profile;
     let attempts = 1;
-    let exitCode = await ffmpeg.exec(buildVideoEncodeArgs(inputPath, outputPath, activeProfile));
+    let exitCode = await execVideoWithWatchdog({
+        ffmpeg,
+        args: buildVideoEncodeArgs(inputPath, outputPath, activeProfile),
+        attemptLabel,
+        inputPath,
+        outputPath,
+    });
     if (exitCode !== 0 && activeProfile.audioMode === "copy") {
         attempts += 1;
         activeProfile = {
@@ -649,21 +743,174 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
             audioMode: "encode",
             audioKbps: Math.min(activeProfile.audioKbps ?? 72, 64),
         };
-        exitCode = await ffmpeg.exec(buildVideoEncodeArgs(inputPath, outputPath, activeProfile));
+        exitCode = await execVideoWithWatchdog({
+            ffmpeg,
+            args: buildVideoEncodeArgs(inputPath, outputPath, activeProfile),
+            attemptLabel: `${attemptLabel} (audio retry)`,
+            inputPath,
+            outputPath,
+        });
     }
 
     if (exitCode !== 0) {
         throw new Error(`Video conversion failed during ${attemptLabel}.`);
     }
 
+    setCurrentStage("output-read");
+    traceEvent("output-read", { phase: "start", attemptLabel });
     beginStage(runMetrics, "output-read");
     const outputData = await ffmpeg.readFile(outputPath);
     endStage(runMetrics, "output-read", { outputBytes: outputData.length });
+    traceEvent("output-read", {
+        phase: "end",
+        attemptLabel,
+        outputBytes: outputData.length,
+    });
     return {
         blob: new Blob([outputData], { type: "video/quicktime" }),
         profile: activeProfile,
         attempts,
     };
+}
+
+async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, outputPath }) {
+    const hasMockScenario = DEBUG_MOCK_MODE === "no-progress-complete" || DEBUG_MOCK_MODE === "stall" || DEBUG_MOCK_MODE === "mt-stall-fallback";
+    if (hasMockScenario) {
+        return runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath });
+    }
+
+    const watchdog = startEncodeWatchdog(ffmpeg, attemptLabel);
+    const startedAt = performance.now();
+
+    try {
+        const exitCode = await ffmpeg.exec(args, ENCODE_TIMEOUT_MS);
+        if (watchdog.stallError) {
+            throw watchdog.stallError;
+        }
+        if (exitCode !== 0 && performance.now() - startedAt >= ENCODE_TIMEOUT_MS - 250) {
+            throw createAppError(
+                "ENCODE_TIMEOUT",
+                `Encode timed out after ${formatDuration(ENCODE_TIMEOUT_MS / 1000)}. Open debug logs.`,
+                {
+                    attemptLabel,
+                    timeoutMs: ENCODE_TIMEOUT_MS,
+                }
+            );
+        }
+        return exitCode;
+    } catch (error) {
+        if (watchdog.stallError) {
+            throw watchdog.stallError;
+        }
+        throw error;
+    } finally {
+        watchdog.stop();
+    }
+}
+
+function startEncodeWatchdog(ffmpeg, attemptLabel) {
+    const encodeStartedAt = performance.now();
+    let stopped = false;
+    let stallError = null;
+
+    const timerId = globalThis.setInterval(() => {
+        if (stopped || !state.processing) {
+            return;
+        }
+        const now = performance.now();
+        const lastActivityAt = Math.max(state.lastProgressEventAt || 0, state.lastLogEventAt || 0, encodeStartedAt);
+        const silenceMs = now - lastActivityAt;
+        if (silenceMs < ENCODE_STALL_THRESHOLD_MS) {
+            return;
+        }
+        const elapsedMs = Math.max(0, now - encodeStartedAt);
+        const stallMessage = `Encode stalled after ${formatDuration(elapsedMs / 1000)} at stage encode. Open debug logs.`;
+        stallError = createAppError("ENCODE_STALLED", stallMessage, {
+            attemptLabel,
+            silenceMs: Math.round(silenceMs),
+            elapsedMs: Math.round(elapsedMs),
+            mode: state.ffmpegMode,
+            stage: state.currentStage,
+        });
+        traceEvent("error", {
+            eventCode: "encode-stalled",
+            attemptLabel,
+            silenceMs: Math.round(silenceMs),
+            elapsedMs: Math.round(elapsedMs),
+            mode: state.ffmpegMode,
+        });
+
+        if (state.ffmpegMode === "mt-fast" && !state.disableMtForSession) {
+            setProgressUpdate("Stalled, recovering...", null);
+            setStatus("Stalled, recovering... Switching MT to ST.", "info");
+        } else {
+            setProgressUpdate("Encode stalled", null);
+            setStatus(stallMessage, "error");
+        }
+
+        stopped = true;
+        globalThis.clearInterval(timerId);
+        terminateFfmpegInstance();
+    }, ENCODE_WATCHDOG_INTERVAL_MS);
+
+    return {
+        get stallError() {
+            return stallError;
+        },
+        stop() {
+            if (stopped) {
+                return;
+            }
+            stopped = true;
+            globalThis.clearInterval(timerId);
+        },
+    };
+}
+
+async function runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath }) {
+    const statusPrefix = `Mock encode (${attemptLabel})`;
+
+    if (DEBUG_MOCK_MODE === "no-progress-complete") {
+        setCurrentStage("encode");
+        recordFfmpegLog("mock: frame=1 fps=26.8 speed=0.7x");
+        await delay(300);
+        recordFfmpegLog("mock: frame=46 fps=28.2 speed=0.8x");
+        await delay(300);
+        const inputData = await ffmpeg.readFile(inputPath);
+        await ffmpeg.writeFile(outputPath, inputData.slice(0, Math.min(inputData.length, 1024)));
+        setStatus(`${statusPrefix} complete.`, "info");
+        return 0;
+    }
+
+    if (DEBUG_MOCK_MODE === "stall") {
+        setCurrentStage("encode");
+        await delay(ENCODE_STALL_THRESHOLD_MS + 1500);
+        throw createAppError("ENCODE_STALLED", "Encode stalled after mock timeout. Open debug logs.", {
+            mode: state.ffmpegMode,
+            stage: state.currentStage,
+            attemptLabel,
+        });
+    }
+
+    if (DEBUG_MOCK_MODE === "mt-stall-fallback") {
+        setCurrentStage("encode");
+        if (!state.disableMtForSession) {
+            await delay(ENCODE_STALL_THRESHOLD_MS + 1500);
+            throw createAppError("ENCODE_STALLED", "Encode stalled in MT mock run. Open debug logs.", {
+                mode: state.ffmpegMode,
+                stage: state.currentStage,
+                attemptLabel,
+            });
+        }
+        setProgressUpdate("Minimizing video (ST fallback)", 70);
+        await delay(250);
+        setProgressUpdate("Minimizing video (ST fallback)", 100);
+        const inputData = await ffmpeg.readFile(inputPath);
+        await ffmpeg.writeFile(outputPath, inputData.slice(0, Math.min(inputData.length, 1024)));
+        return 0;
+    }
+
+    return 0;
 }
 
 async function runVideoRemuxAttempt({ ffmpeg, inputPath, outputPath }) {
@@ -1056,6 +1303,12 @@ async function getFfmpeg(fileSizeBytes = null) {
                         state.ffmpegProgressCb(progress);
                     }
                 });
+                ffmpeg.on("log", ({ message, type }) => {
+                    if (!state.processing) {
+                        return;
+                    }
+                    recordFfmpegLog(message, type);
+                });
 
                 try {
                     await ffmpeg.load(candidate.loadOptions);
@@ -1161,6 +1414,129 @@ async function minimizeImage(file, targetBytes, runMetrics) {
             bitmap.close();
         }
     }
+}
+
+function beginRunTrace(kind) {
+    state.trace = [];
+    state.ffmpegLogs = [];
+    state.runStartedAtMs = performance.now();
+    state.lastProgressEventAt = 0;
+    state.lastLogEventAt = 0;
+    setCurrentStage("run");
+    traceEvent("run-start", {
+        kind,
+        runtimeMode: state.ffmpegMode,
+        runtimePreferred: state.ffmpegPreferredMode,
+        mockMode: DEBUG_MOCK_MODE || null,
+    });
+}
+
+function finalizeRunTrace() {
+    state.lastTrace = state.trace.map((entry) => ({ ...entry }));
+    state.lastFfmpegLogs = state.ffmpegLogs.map((entry) => ({ ...entry }));
+}
+
+function setCurrentStage(stage) {
+    state.currentStage = stage || "unknown";
+    state.stageStartedAtMs = performance.now();
+}
+
+function traceEvent(event, details = {}) {
+    if (!event) {
+        return;
+    }
+    const timestamp = performance.now();
+    const elapsedMs = state.runStartedAtMs > 0 ? Math.max(0, timestamp - state.runStartedAtMs) : 0;
+    const entry = {
+        event,
+        elapsedMs: Number(elapsedMs.toFixed(1)),
+        atIso: new Date().toISOString(),
+        ...details,
+    };
+    state.trace.push(entry);
+    if (state.trace.length > DEBUG_TRACE_LIMIT) {
+        state.trace.splice(0, state.trace.length - DEBUG_TRACE_LIMIT);
+    }
+    if (DEBUG_MODE) {
+        console.debug("[MediaMinimizer][trace]", entry);
+    }
+}
+
+function recordFfmpegLog(message, type = "info") {
+    const text = String(message || "").trim();
+    if (!text) {
+        return;
+    }
+    const now = performance.now();
+    state.lastLogEventAt = now;
+    const elapsedMs = state.runStartedAtMs > 0 ? Math.max(0, now - state.runStartedAtMs) : 0;
+    const entry = {
+        type,
+        message: text,
+        elapsedMs: Number(elapsedMs.toFixed(1)),
+        atIso: new Date().toISOString(),
+    };
+    state.ffmpegLogs.push(entry);
+    if (state.ffmpegLogs.length > DEBUG_LOG_LIMIT) {
+        state.ffmpegLogs.splice(0, state.ffmpegLogs.length - DEBUG_LOG_LIMIT);
+    }
+    if (state.currentStage === "encode") {
+        traceEvent("encode-log", {
+            type,
+            message: text.slice(0, 220),
+        });
+    }
+    if (DEBUG_MODE) {
+        console.debug("[MediaMinimizer][ffmpeg-log]", entry);
+    }
+}
+
+function getLiveDebugState() {
+    const now = performance.now();
+    const runElapsedMs = state.runStartedAtMs > 0 ? Math.max(0, now - state.runStartedAtMs) : 0;
+    const stageElapsedMs = state.stageStartedAtMs > 0 ? Math.max(0, now - state.stageStartedAtMs) : 0;
+    const lastProgressAgoMs = state.lastProgressEventAt > 0 ? Math.max(0, now - state.lastProgressEventAt) : null;
+    const lastLogAgoMs = state.lastLogEventAt > 0 ? Math.max(0, now - state.lastLogEventAt) : null;
+    const lastEventAt = Math.max(state.lastProgressEventAt || 0, state.lastLogEventAt || 0);
+    const lastEventAgoMs = lastEventAt > 0 ? Math.max(0, now - lastEventAt) : null;
+    return {
+        processing: state.processing,
+        stage: state.currentStage,
+        elapsedMs: Number(runElapsedMs.toFixed(1)),
+        stageElapsedMs: Number(stageElapsedMs.toFixed(1)),
+        lastProgressAgoMs: Number.isFinite(lastProgressAgoMs) ? Number(lastProgressAgoMs.toFixed(1)) : null,
+        lastLogAgoMs: Number.isFinite(lastLogAgoMs) ? Number(lastLogAgoMs.toFixed(1)) : null,
+        lastEventAgoMs: Number.isFinite(lastEventAgoMs) ? Number(lastEventAgoMs.toFixed(1)) : null,
+        runtimeMode: state.ffmpegMode,
+        runtimePreferred: state.ffmpegPreferredMode,
+    };
+}
+
+function terminateFfmpegInstance() {
+    if (state.ffmpeg) {
+        try {
+            state.ffmpeg.terminate();
+        } catch (error) {
+            // Ignore termination failures while resetting runtime.
+        }
+    }
+    state.ffmpeg = null;
+    state.ffmpegLoader = null;
+    state.ffmpegMode = "unknown";
+    state.ffmpegPreferredMode = "unknown";
+}
+
+function createAppError(code, message, details = {}) {
+    const error = new Error(message);
+    error.code = code;
+    error.details = details;
+    return error;
+}
+
+function delay(ms) {
+    return new Promise((resolve) => {
+        globalThis.setTimeout(resolve, ms);
+    });
 }
 
 async function imageHasAlpha(bitmap) {

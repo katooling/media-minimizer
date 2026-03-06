@@ -57,6 +57,29 @@ Video path uses fast defaults:
 
 The app also records stage timings (`load`, `input`, `metadata`, `encode`, `output-read`, total) and exposes them via `window.__mediaMinimizerDebug.getLastRunMetrics()`.
 
+## Local Debug / Stall Investigation
+
+Use `?debug=1` to enable structured console traces and local-only diagnostics.
+
+Debug helpers:
+
+- `window.__mediaMinimizerDebug.getLastRunMetrics()`
+- `window.__mediaMinimizerDebug.getLastTrace()`
+- `window.__mediaMinimizerDebug.getLastFfmpegLogs()`
+- `window.__mediaMinimizerDebug.getLiveState()`
+
+Stall handling defaults:
+
+- Encode watchdog: `25s` without progress/log activity.
+- Encode timeout: `12 min`.
+- MT stall/failure retries once in ST mode, then fails explicitly.
+
+Optional URL overrides for local testing:
+
+- `?debug=1&stallMs=2500`
+- `?debug=1&encodeTimeoutMs=20000`
+- `?debug=1&ffmpegMock=no-progress-complete|stall|mt-stall-fallback`
+
 ## Cross-Origin Isolation on GitHub Pages
 
 `coi-serviceworker.js` is included locally and auto-registered to attempt cross-origin isolation on hosts without configurable response headers.
