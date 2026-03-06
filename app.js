@@ -39,7 +39,7 @@ const FALLBACK_TARGET_MARGIN = 1.1;
 const TARGET_PAYLOAD_RATIO = 0.96;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const ST_LARGE_THRESHOLD_BYTES = 24 * 1024 * 1024;
-const REMUX_MARGIN_RATIO = 1.08;
+const REMUX_MARGIN_RATIO = 1.18;
 
 init();
 
@@ -326,7 +326,9 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
 
     try {
         beginStage(runMetrics, "metadata");
-        let durationSeconds = await probeDurationSecondsFromBrowser(file);
+        const browserMetadata = await probeVideoMetadataFromBrowser(file);
+        let durationSeconds = browserMetadata?.durationSeconds ?? null;
+        const sourceHeight = browserMetadata?.height ?? null;
         let durationSource = "browser";
         if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
             durationSeconds = await probeDurationSeconds(ffmpeg, inputHandle.inputPath, probePath);
@@ -335,6 +337,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
         endStage(runMetrics, "metadata", {
             durationSeconds: Number.isFinite(durationSeconds) ? Number(durationSeconds.toFixed(3)) : null,
             durationSource,
+            sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : null,
         });
 
         const etaBand = estimateVideoEtaBand(durationSeconds, state.ffmpegMode);
@@ -367,6 +370,8 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             durationSeconds,
             aggressive: false,
             copyAudioSafe,
+            sourceHeight,
+            runtimeMode: state.ffmpegMode,
         });
         beginStage(runMetrics, "encode");
         let bestAttempt = await runVideoEncodeAttempt({
@@ -387,6 +392,8 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
                 reductionFactor,
                 baseProfile: bestAttempt.profile,
                 copyAudioSafe: false,
+                sourceHeight,
+                runtimeMode: state.ffmpegMode,
             });
 
             const fallbackAttempt = await runVideoEncodeAttempt({
@@ -503,6 +510,10 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         "libx264",
         "-preset",
         profile.preset,
+        "-tune",
+        "zerolatency",
+        "-threads",
+        String(profile.threads),
         "-b:v",
         `${profile.videoKbps}k`,
         "-maxrate",
@@ -534,7 +545,16 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
     return args;
 }
 
-function buildVideoEncodeProfile({ targetBytes, durationSeconds, aggressive, reductionFactor = 1, baseProfile = null, copyAudioSafe = false }) {
+function buildVideoEncodeProfile({
+    targetBytes,
+    durationSeconds,
+    aggressive,
+    reductionFactor = 1,
+    baseProfile = null,
+    copyAudioSafe = false,
+    sourceHeight = null,
+    runtimeMode = "unknown",
+}) {
     if (baseProfile) {
         const videoKbps = Math.max(140, Math.floor(baseProfile.videoKbps * reductionFactor));
         const audioKbps = aggressive ? 56 : baseProfile.audioKbps;
@@ -544,6 +564,8 @@ function buildVideoEncodeProfile({ targetBytes, durationSeconds, aggressive, red
             videoKbps,
             audioKbps,
             audioMode,
+            sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : baseProfile.sourceHeight,
+            runtimeMode: runtimeMode || baseProfile.runtimeMode,
         });
     }
 
@@ -571,10 +593,12 @@ function buildVideoEncodeProfile({ targetBytes, durationSeconds, aggressive, red
         videoKbps,
         audioKbps,
         audioMode,
+        sourceHeight,
+        runtimeMode,
     });
 }
 
-function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode }) {
+function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode, sourceHeight = null, runtimeMode = "unknown" }) {
     let maxHeight = null;
     let maxFps = null;
 
@@ -589,11 +613,18 @@ function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode }) {
         maxFps = 30;
     }
 
+    if (Number.isFinite(sourceHeight) && Number.isFinite(maxHeight) && sourceHeight <= maxHeight) {
+        maxHeight = null;
+    }
+
     return {
         preset,
         videoKbps,
         audioKbps,
         audioMode,
+        sourceHeight,
+        runtimeMode,
+        threads: computeEncoderThreads(runtimeMode),
         maxHeight,
         maxFps,
         maxrateKbps: Math.max(videoKbps + 80, Math.floor(videoKbps * 1.18)),
@@ -620,6 +651,12 @@ function shouldTryRemuxOnly(file, targetBytes) {
     if (ext === ".mov" || ext === ".avi") {
         return false;
     }
+    if (file.size <= targetBytes) {
+        return true;
+    }
+    if (ext === ".mp4" || ext === ".m4v") {
+        return file.size <= Math.floor(targetBytes * 1.35);
+    }
     return file.size <= Math.floor(targetBytes * REMUX_MARGIN_RATIO);
 }
 
@@ -639,7 +676,7 @@ function computeEffectiveFps(durationSeconds, encodeMs) {
     return durationSeconds / (encodeMs / 1000);
 }
 
-async function probeDurationSecondsFromBrowser(file) {
+async function probeVideoMetadataFromBrowser(file) {
     if (typeof document === "undefined") {
         return null;
     }
@@ -649,10 +686,14 @@ async function probeDurationSecondsFromBrowser(file) {
     video.preload = "metadata";
 
     try {
-        const duration = await new Promise((resolve) => {
+        const metadata = await new Promise((resolve) => {
             const onLoadedMetadata = () => {
                 cleanup();
-                resolve(video.duration);
+                resolve({
+                    durationSeconds: video.duration,
+                    width: video.videoWidth,
+                    height: video.videoHeight,
+                });
             };
             const onError = () => {
                 cleanup();
@@ -666,12 +707,37 @@ async function probeDurationSecondsFromBrowser(file) {
             video.addEventListener("error", onError, { once: true });
             video.src = objectUrl;
         });
-        return Number.isFinite(duration) && duration > 0 ? duration : null;
+        if (!metadata) {
+            return null;
+        }
+        const durationSeconds = Number.isFinite(metadata.durationSeconds) && metadata.durationSeconds > 0 ? metadata.durationSeconds : null;
+        const width = Number.isFinite(metadata.width) && metadata.width > 0 ? metadata.width : null;
+        const height = Number.isFinite(metadata.height) && metadata.height > 0 ? metadata.height : null;
+        if (!durationSeconds && !width && !height) {
+            return null;
+        }
+        return {
+            durationSeconds,
+            width,
+            height,
+        };
     } finally {
         video.removeAttribute("src");
         video.load();
         URL.revokeObjectURL(objectUrl);
     }
+}
+
+function computeEncoderThreads(runtimeMode) {
+    if (runtimeMode !== "mt-fast") {
+        return 1;
+    }
+
+    const hardwareConcurrency = Number(globalThis.navigator?.hardwareConcurrency || 0);
+    if (!Number.isFinite(hardwareConcurrency) || hardwareConcurrency <= 0) {
+        return 4;
+    }
+    return clamp(Math.floor(hardwareConcurrency * 0.75), 2, 8);
 }
 
 async function probeDurationSeconds(ffmpeg, inputPath, outputPath) {

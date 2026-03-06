@@ -41,14 +41,16 @@ Selection policy:
 Video path uses fast defaults:
 
 - Browser metadata duration first (`ffprobe` only fallback).
+- Browser video dimensions are used to avoid unnecessary scale filters.
 - One-pass target-bitrate encode, optional bounded fallback only if needed.
 - `ultrafast` preset.
+- `zerolatency` tune + runtime-aware thread count (`MT` uses more worker threads).
 - Progress updates throttled to reduce UI overhead.
 - Audio strategy adapts: copy when likely safe, otherwise AAC re-encode.
 - Auto caps fps/resolution at low bitrates.
 - Short-circuits:
   - passthrough when already `.mov` and under target
-  - remux-only attempt near target before full transcode
+  - broader remux-only attempt window before full transcode
 
 The app also records stage timings (`load`, `input`, `metadata`, `encode`, `output-read`, total) and exposes them via `window.__mediaMinimizerDebug.getLastRunMetrics()`.
 
