@@ -9,4 +9,4 @@
 --enable-parser=h264,hevc,vp8,vp9,aac,opus,mpeg4video,mjpeg,png
 --enable-decoder=h264,hevc,vp8,vp9,aac,opus,mp3,mjpeg,png
 --enable-encoder=libx264,aac,mjpeg,png
---enable-filter=scale,fps,format
+--enable-filter=null,setpts,scale,fps,format,aresample,anull
