@@ -70,7 +70,8 @@ Debug helpers:
 
 Stall handling defaults:
 
-- Encode watchdog: `25s` without progress/log activity.
+- Encode watchdog: soft warning after `25s` without progress/log activity.
+- Hard stall cutoff is adaptive from clip duration + runtime mode (clamped to `120s`-`420s`).
 - Encode timeout: `12 min`.
 - MT stall/failure retries once in ST mode, then fails explicitly.
 

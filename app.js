@@ -71,6 +71,8 @@ const parsedDebugTimeoutMs = Number.parseInt(debugParams.get("encodeTimeoutMs") 
 const ENCODE_STALL_THRESHOLD_MS = Number.isFinite(parsedDebugStallMs) && parsedDebugStallMs > 1000 ? parsedDebugStallMs : 25_000;
 const ENCODE_ACTIVITY_HINT_MS = 5_000;
 const ENCODE_WATCHDOG_INTERVAL_MS = 1_000;
+const ENCODE_HARD_STALL_MIN_MS = 120_000;
+const ENCODE_HARD_STALL_MAX_MS = 420_000;
 const ENCODE_TIMEOUT_MS = Number.isFinite(parsedDebugTimeoutMs) && parsedDebugTimeoutMs > 1000 ? parsedDebugTimeoutMs : 12 * 60 * 1000;
 const DROP_TITLE_DEFAULT = "Drop file here";
 const DROP_NOTE_DEFAULT = "or click to select a video/image";
@@ -522,7 +524,8 @@ function shouldRetryWithSingleThread(error) {
     if (DEBUG_MOCK_MODE === "mt-stall-fallback" && error?.code === "ENCODE_STALLED" && !state.disableMtForSession) {
         return true;
     }
-    if (state.ffmpegMode !== "mt-fast" || state.disableMtForSession) {
+    const modeHint = error?.details?.mode || state.ffmpegMode;
+    if (modeHint !== "mt-fast" || state.disableMtForSession) {
         return false;
     }
     if (error?.code === "ENCODE_STALLED" || error?.code === "ENCODE_TIMEOUT") {
@@ -642,6 +645,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             profile: primaryProfile,
             attemptLabel: "attempt 1",
             runMetrics,
+            durationSeconds,
         });
 
         if (bestAttempt.blob.size > Math.floor(targetBytes * FALLBACK_TARGET_MARGIN)) {
@@ -664,6 +668,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
                 profile: fallbackProfile,
                 attemptLabel: "fallback attempt",
                 runMetrics,
+                durationSeconds,
             });
 
             if (fallbackAttempt.blob.size < bestAttempt.blob.size) {
@@ -696,10 +701,12 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
     }
 }
 
-async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, attemptLabel, runMetrics }) {
+async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, attemptLabel, runMetrics, durationSeconds = null }) {
+    const modeAtStart = state.ffmpegMode;
     setCurrentStage("encode");
     traceEvent("encode-start", {
         attemptLabel,
+        mode: modeAtStart,
         preset: profile.preset,
         videoKbps: profile.videoKbps,
         audioMode: profile.audioMode,
@@ -735,6 +742,8 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         attemptLabel,
         inputPath,
         outputPath,
+        durationSeconds,
+        modeAtStart,
     });
     if (exitCode !== 0 && activeProfile.audioMode === "copy") {
         attempts += 1;
@@ -749,6 +758,8 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
             attemptLabel: `${attemptLabel} (audio retry)`,
             inputPath,
             outputPath,
+            durationSeconds,
+            modeAtStart,
         });
     }
 
@@ -773,13 +784,13 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
     };
 }
 
-async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, outputPath }) {
+async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, outputPath, durationSeconds, modeAtStart }) {
     const hasMockScenario = DEBUG_MOCK_MODE === "no-progress-complete" || DEBUG_MOCK_MODE === "stall" || DEBUG_MOCK_MODE === "mt-stall-fallback";
     if (hasMockScenario) {
         return runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath });
     }
 
-    const watchdog = startEncodeWatchdog(ffmpeg, attemptLabel);
+    const watchdog = startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart);
     const startedAt = performance.now();
 
     try {
@@ -794,6 +805,7 @@ async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, ou
                 {
                     attemptLabel,
                     timeoutMs: ENCODE_TIMEOUT_MS,
+                    mode: modeAtStart || state.ffmpegMode,
                 }
             );
         }
@@ -808,8 +820,11 @@ async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, ou
     }
 }
 
-function startEncodeWatchdog(ffmpeg, attemptLabel) {
+function startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart) {
     const encodeStartedAt = performance.now();
+    const attemptMode = modeAtStart || state.ffmpegMode;
+    const hardStallMs = computeHardStallThresholdMs(durationSeconds, attemptMode);
+    let softWarningShown = false;
     let stopped = false;
     let stallError = null;
 
@@ -823,24 +838,40 @@ function startEncodeWatchdog(ffmpeg, attemptLabel) {
         if (silenceMs < ENCODE_STALL_THRESHOLD_MS) {
             return;
         }
+        if (!softWarningShown) {
+            softWarningShown = true;
+            traceEvent("encode-silent", {
+                attemptLabel,
+                silenceMs: Math.round(silenceMs),
+                hardStallMs: Math.round(hardStallMs),
+                mode: attemptMode,
+            });
+            setProgressUpdate("Still processing (quiet encode phase)", null);
+            setStatus("Still processing. Some browser encodes are silent for a while.", "info");
+        }
+        if (silenceMs < hardStallMs) {
+            return;
+        }
         const elapsedMs = Math.max(0, now - encodeStartedAt);
         const stallMessage = `Encode stalled after ${formatDuration(elapsedMs / 1000)} at stage encode. Open debug logs.`;
         stallError = createAppError("ENCODE_STALLED", stallMessage, {
             attemptLabel,
             silenceMs: Math.round(silenceMs),
             elapsedMs: Math.round(elapsedMs),
-            mode: state.ffmpegMode,
+            mode: attemptMode,
             stage: state.currentStage,
+            hardStallMs: Math.round(hardStallMs),
         });
         traceEvent("error", {
             eventCode: "encode-stalled",
             attemptLabel,
             silenceMs: Math.round(silenceMs),
             elapsedMs: Math.round(elapsedMs),
-            mode: state.ffmpegMode,
+            mode: attemptMode,
+            hardStallMs: Math.round(hardStallMs),
         });
 
-        if (state.ffmpegMode === "mt-fast" && !state.disableMtForSession) {
+        if (attemptMode === "mt-fast" && !state.disableMtForSession) {
             setProgressUpdate("Stalled, recovering...", null);
             setStatus("Stalled, recovering... Switching MT to ST.", "info");
         } else {
@@ -943,6 +974,9 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
     const args = [
         "-i",
         inputPath,
+        "-stats_period",
+        "1",
+        "-stats",
         "-map",
         "0:v:0",
         "-map",
@@ -1114,6 +1148,13 @@ function computeEffectiveFps(durationSeconds, encodeMs) {
         return null;
     }
     return durationSeconds / (encodeMs / 1000);
+}
+
+function computeHardStallThresholdMs(durationSeconds, mode) {
+    const safeDuration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : 60;
+    const modeFactor = mode === "mt-fast" ? 3.2 : 5.2;
+    const derivedMs = safeDuration * modeFactor * 1000;
+    return clamp(Math.round(derivedMs), ENCODE_HARD_STALL_MIN_MS, ENCODE_HARD_STALL_MAX_MS);
 }
 
 async function probeVideoMetadataFromBrowser(file) {
@@ -1627,8 +1668,12 @@ function endRunMetrics(runMetrics, status) {
     runMetrics.endedAt = performance.now();
     runMetrics.totalMs = Number(Math.max(0, runMetrics.endedAt - runMetrics.startedAt).toFixed(2));
     runMetrics.status = status;
-    runMetrics.runtimeMode = state.ffmpegMode;
-    runMetrics.runtimePreferred = state.ffmpegPreferredMode;
+    if (state.ffmpegMode !== "unknown") {
+        runMetrics.runtimeMode = state.ffmpegMode;
+    }
+    if (state.ffmpegPreferredMode !== "unknown") {
+        runMetrics.runtimePreferred = state.ffmpegPreferredMode;
+    }
 }
 
 function appendMetricNote(runMetrics, note) {
