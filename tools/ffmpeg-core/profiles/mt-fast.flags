@@ -1,0 +1,12 @@
+# Multi-thread profile tuned for fastest path when cross-origin isolation is available.
+--disable-everything
+--enable-gpl
+--enable-libx264
+--enable-zlib
+--enable-protocol=file
+--enable-demuxer=mov,matroska,webm,avi,mpegts,image2
+--enable-muxer=mov,image2
+--enable-parser=h264,hevc,vp8,vp9,aac,opus,mpeg4video,mjpeg,png
+--enable-decoder=h264,hevc,vp8,vp9,aac,opus,mp3,mjpeg,png,mpeg4
+--enable-encoder=libx264,aac,mjpeg,png
+--enable-filter=scale,fps,format

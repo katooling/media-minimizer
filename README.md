@@ -8,7 +8,7 @@ Equivalent intent of:
 ffmpeg -i "<your-file>" output.mov
 ```
 
-but with a simple browser UI:
+with a minimal UI:
 
 1. Drop/select file
 2. Click **Minimize**
@@ -16,16 +16,56 @@ but with a simple browser UI:
 
 ## What it does
 
-- Video input (`video/*`) -> outputs `.mov` using `ffmpeg.wasm` in browser.
+- Video input (`video/*`) -> outputs `.mov` using local `ffmpeg.wasm`.
 - Image input (`image/*`) -> outputs optimized image using browser canvas.
 - Unsupported file types are rejected inline.
-- No backend and no upload: processing is local in your browser tab.
-- FFmpeg assets are vendored locally under `vendor/ffmpeg` (no CDN dependency).
-- Video minimizes in fast mode by default: one-pass target-bitrate encode plus one fallback attempt only if needed.
+- No backend and no upload: processing stays in-browser.
+- FFmpeg assets are vendored locally under `vendor/ffmpeg`.
+
+## Runtime Modes
+
+Engine badge values:
+
+- `Engine: Ready (ST-lite)`
+- `Engine: Ready (ST-large)`
+- `Engine: Ready (MT-sw)`
+- `Engine: Ready (MT-header)`
+
+Selection policy:
+
+- If isolated: prefer `MT` (`mt-fast`) with `ST` fallback.
+- If not isolated: choose `ST-large` for bigger files, `ST-lite` for smaller files.
+
+## Speed Strategy
+
+Video path uses fast defaults:
+
+- Browser metadata duration first (`ffprobe` only fallback).
+- One-pass target-bitrate encode, optional bounded fallback only if needed.
+- `ultrafast` preset.
+- Progress updates throttled to reduce UI overhead.
+- Audio strategy adapts: copy when likely safe, otherwise AAC re-encode.
+- Auto caps fps/resolution at low bitrates.
+- Short-circuits:
+  - passthrough when already `.mov` and under target
+  - remux-only attempt near target before full transcode
+
+The app also records stage timings (`load`, `input`, `metadata`, `encode`, `output-read`, total) and exposes them via `window.__mediaMinimizerDebug.getLastRunMetrics()`.
+
+## Cross-Origin Isolation on GitHub Pages
+
+`coi-serviceworker.js` is included locally and auto-registered to attempt cross-origin isolation on hosts without configurable response headers.
+
+- Baseline always works: `github.io` + `ST`.
+- If service worker isolation succeeds, `MT-sw` is used.
+- If your host sets real headers (`COOP` + `COEP`), `MT-header` is used.
+
+For guaranteed MT on public hosting, use a custom domain with an edge proxy (for example Cloudflare) that injects:
+
+- `Cross-Origin-Opener-Policy: same-origin`
+- `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`)
 
 ## Quick start
-
-Serve as static files:
 
 ```bash
 cd /Users/mkamar/Non_Work/Projects/media-minimizer
@@ -34,26 +74,26 @@ python3 -m http.server 8000
 
 Open: `http://127.0.0.1:8000`
 
-## E2E smoke test
+## Test + Benchmark
 
 ```bash
 cd /Users/mkamar/Non_Work/Projects/media-minimizer
 npm install
 npm run test:e2e
+npm run bench:video
 ```
 
-This test covers: file select -> `Minimize` enabled -> processing -> `Download` enabled.
+## Custom Core Pipeline
 
-## Notes
+Build/sync scripts are in `tools/ffmpeg-core`:
 
-- `Max size (MB)` defaults to `10`.
-- For video, the app computes a target bitrate from file duration and max-size target.
-- The app runs one encode attempt first, then an optional fallback attempt when output is still significantly above target.
-- FFmpeg engine is preloaded at startup. After preload completes, `Minimize` runs without new network requests.
-- Engine badge shows runtime mode:
-  - `Engine: Ready (ST)` for single-thread core.
-  - `Engine: Ready (MT)` for multi-thread core.
-- Multi-thread (`MT`) requires cross-origin isolation headers on your host:
-  - `Cross-Origin-Opener-Policy: same-origin`
-  - `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`)
-- Without those headers, app falls back automatically to `ST`.
+```bash
+npm run core:build:st-lite
+npm run core:build:st-large
+npm run core:build:mt-fast
+npm run core:sync:st-lite
+npm run core:sync:st-large
+npm run core:sync:mt-fast
+```
+
+Checksums are tracked in `vendor/ffmpeg/CHECKSUMS.sha256`.

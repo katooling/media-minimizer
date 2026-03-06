@@ -1,3 +1,5 @@
 node_modules/
 test-results/
 playwright-report/
+tools/ffmpeg-core/.tmp/
+tools/ffmpeg-core/out/

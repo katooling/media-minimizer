@@ -7,22 +7,37 @@ async function waitForEngineReady(page) {
 
 test("runtime mode priority helper covers isolated and non-isolated", async ({ page }) => {
     await page.goto("/");
-
-    const runtimeConfig = await page.evaluate(() => {
-        const debug = window.__mediaMinimizerDebug;
-        return {
-            isolatedPriority: debug.getRuntimeModePriority(true),
-            nonIsolatedPriority: debug.getRuntimeModePriority(false),
-            currentIsolation: window.crossOriginIsolated,
-        };
-    });
-
-    expect(runtimeConfig.isolatedPriority).toEqual(["mt", "st"]);
-    expect(runtimeConfig.nonIsolatedPriority).toEqual(["st"]);
-
     await waitForEngineReady(page);
+
+    let runtimeConfig;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            runtimeConfig = await page.evaluate(() => {
+                const debug = window.__mediaMinimizerDebug;
+                return {
+                    isolatedLargePriority: debug.getRuntimeModePriority(true, 50 * 1024 * 1024),
+                    isolatedSmallPriority: debug.getRuntimeModePriority(true, 5 * 1024 * 1024),
+                    nonIsolatedLargePriority: debug.getRuntimeModePriority(false, 50 * 1024 * 1024),
+                    nonIsolatedSmallPriority: debug.getRuntimeModePriority(false, 5 * 1024 * 1024),
+                    currentIsolation: window.crossOriginIsolated,
+                };
+            });
+            break;
+        } catch (error) {
+            if (attempt === 2) {
+                throw error;
+            }
+            await page.waitForTimeout(250);
+        }
+    }
+
+    expect(runtimeConfig.isolatedLargePriority).toEqual(["mt-fast", "st-large", "st-lite"]);
+    expect(runtimeConfig.isolatedSmallPriority).toEqual(["mt-fast", "st-lite", "st-large"]);
+    expect(runtimeConfig.nonIsolatedLargePriority).toEqual(["st-large", "st-lite"]);
+    expect(runtimeConfig.nonIsolatedSmallPriority).toEqual(["st-lite", "st-large"]);
+
     if (!runtimeConfig.currentIsolation) {
-        await expect(page.locator("#engineBadge")).toContainText("(ST)");
+        await expect(page.locator("#engineBadge")).toContainText("(ST-");
     }
 });
 
@@ -33,7 +48,7 @@ test("image flow enables minimize/download and sends no new requests on minimize
         if (!captureRequests) {
             return;
         }
-        if (!request.url().startsWith("data:")) {
+        if (!request.url().startsWith("data:") && !request.url().startsWith("blob:")) {
             minimizeRequests += 1;
         }
     });
@@ -58,6 +73,11 @@ test("image flow enables minimize/download and sends no new requests on minimize
     await expect(downloadBtn).toBeEnabled();
     await expect(page.locator("#outputName")).toContainText("-min");
     expect(minimizeRequests).toBe(0);
+
+    const metrics = await page.evaluate(() => window.__mediaMinimizerDebug.getLastRunMetrics());
+    expect(metrics?.kind).toBe("image");
+    expect(metrics?.stages?.["image-read"]?.ms).toBeGreaterThanOrEqual(0);
+    expect(metrics?.stages?.["image-encode"]?.ms).toBeGreaterThanOrEqual(0);
 });
 
 test("video flow converts to mov and enables download", async ({ page }) => {
@@ -68,7 +88,7 @@ test("video flow converts to mov and enables download", async ({ page }) => {
         if (!captureRequests) {
             return;
         }
-        if (!request.url().startsWith("data:")) {
+        if (!request.url().startsWith("data:") && !request.url().startsWith("blob:")) {
             minimizeRequests += 1;
         }
     });
@@ -93,4 +113,12 @@ test("video flow converts to mov and enables download", async ({ page }) => {
     await expect(downloadBtn).toBeEnabled();
     await expect(page.locator("#outputName")).toContainText(".mov");
     expect(minimizeRequests).toBe(0);
+
+    const metrics = await page.evaluate(() => window.__mediaMinimizerDebug.getLastRunMetrics());
+    expect(metrics?.kind).toBe("video");
+    expect(metrics?.stages?.load?.ms).toBeGreaterThanOrEqual(0);
+    expect(metrics?.stages?.input?.ms).toBeGreaterThanOrEqual(0);
+    expect(metrics?.stages?.metadata?.ms).toBeGreaterThanOrEqual(0);
+    const transcodeStageMs = metrics?.stages?.encode?.ms ?? metrics?.stages?.remux?.ms;
+    expect(transcodeStageMs).toBeGreaterThanOrEqual(0);
 });

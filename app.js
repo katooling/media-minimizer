@@ -28,12 +28,18 @@ const state = {
     ffmpegProgressCb: null,
     ffmpegPreloadDone: false,
     ffmpegMode: "unknown",
+    ffmpegPreferredMode: "unknown",
+    lastProgressUpdateAt: 0,
+    lastRunMetrics: null,
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"]);
 const FALLBACK_TARGET_MARGIN = 1.1;
 const TARGET_PAYLOAD_RATIO = 0.96;
+const PROGRESS_UPDATE_INTERVAL_MS = 250;
+const ST_LARGE_THRESHOLD_BYTES = 24 * 1024 * 1024;
+const REMUX_MARGIN_RATIO = 1.08;
 
 init();
 
@@ -47,7 +53,16 @@ function init() {
 
     // Exposed for E2E assertions of runtime selection behavior.
     if (typeof window !== "undefined") {
-        window.__mediaMinimizerDebug = { getRuntimeModePriority };
+        window.__mediaMinimizerDebug = {
+            getRuntimeModePriority,
+            getLastRunMetrics: () => state.lastRunMetrics,
+            getRuntimeState: () => ({
+                activeMode: state.ffmpegMode,
+                preferredMode: state.ffmpegPreferredMode,
+                isolated: Boolean(globalThis.crossOriginIsolated),
+                isolationSource: getIsolationSource(),
+            }),
+        };
     }
 
     setEngineBadge("loading", "Engine: Loading");
@@ -57,10 +72,10 @@ function init() {
 
 async function warmupFfmpeg() {
     try {
-        await getFfmpeg();
+        await getFfmpeg(ST_LARGE_THRESHOLD_BYTES);
         state.ffmpegPreloadDone = true;
         if (!state.processing && !state.inputFile) {
-            setStatus(`Ready (${state.ffmpegMode.toUpperCase()} engine). Drop a video or image to start.`, "info");
+            setStatus(`Ready (${formatRuntimeLabel(state.ffmpegMode)} engine). Drop a video or image to start.`, "info");
         }
     } catch (error) {
         state.ffmpegPreloadDone = false;
@@ -120,7 +135,7 @@ function setInputFile(file) {
     elements.minimizeBtn.disabled = false;
 
     if (typeLabel === "video" && state.ffmpegPreloadDone) {
-        setStatus(`Ready to minimize video with ${state.ffmpegMode.toUpperCase()} engine.`, "info");
+        setStatus(`Ready to minimize video with ${formatRuntimeLabel(state.ffmpegMode)} engine.`, "info");
         return;
     }
     setStatus(`Ready to minimize ${typeLabel}.`, "info");
@@ -161,16 +176,20 @@ async function onMinimizeClick() {
 
     setProcessing(true);
     clearOutput();
+    const runMetrics = startRunMetrics(inputType);
+    state.lastRunMetrics = runMetrics;
 
     try {
         let result;
         if (inputType === "video") {
-            result = await minimizeVideo(state.inputFile, targetBytes);
+            result = await minimizeVideo(state.inputFile, targetBytes, runMetrics);
         } else {
-            result = await minimizeImage(state.inputFile, targetBytes);
+            result = await minimizeImage(state.inputFile, targetBytes, runMetrics);
         }
+        endRunMetrics(runMetrics, "success");
         setOutputResult(result, targetBytes);
     } catch (error) {
+        endRunMetrics(runMetrics, "failed");
         const message = error instanceof Error ? error.message : "Minimize failed.";
         setStatus(message, "error");
     } finally {
@@ -194,10 +213,12 @@ function setOutputResult(result, targetBytes) {
     elements.result.hidden = false;
     elements.downloadBtn.disabled = false;
 
+    const totalMs = state.lastRunMetrics?.totalMs;
+    const timingSuffix = Number.isFinite(totalMs) ? ` Total ${formatDurationMs(totalMs)}.` : "";
     if (outputSize <= targetBytes) {
-        setStatus("Done. File is under target size and ready to download.", "success");
+        setStatus(`Done. File is under target size and ready to download.${timingSuffix}`, "success");
     } else {
-        setStatus("Done. Could not reach target size; best minimized result is ready to download.", "info");
+        setStatus(`Done. Could not reach target size; best minimized result is ready to download.${timingSuffix}`, "info");
     }
 }
 
@@ -220,8 +241,39 @@ function setEngineBadge(kind, text) {
 }
 
 function setEngineReadyBadge(mode) {
-    const suffix = mode === "mt" ? "MT" : "ST";
-    setEngineBadge("ready", `Engine: Ready (${suffix})`);
+    setEngineBadge("ready", `Engine: Ready (${formatRuntimeLabel(mode)})`);
+}
+
+function formatRuntimeLabel(mode) {
+    if (mode === "st-lite") {
+        return "ST-lite";
+    }
+    if (mode === "st-large") {
+        return "ST-large";
+    }
+    if (mode === "mt-fast") {
+        const isolationSource = getIsolationSource();
+        return isolationSource === "sw" ? "MT-sw" : "MT-header";
+    }
+    return "unknown";
+}
+
+function getIsolationSource() {
+    if (!globalThis.crossOriginIsolated) {
+        return "none";
+    }
+    try {
+        const source = sessionStorage.getItem("mm-isolation-source");
+        if (source === "sw") {
+            const controllerUrl = globalThis.navigator?.serviceWorker?.controller?.scriptURL || "";
+            if (controllerUrl.includes("coi-serviceworker.js")) {
+                return "sw";
+            }
+        }
+    } catch (error) {
+        // Ignore storage access limitations and fall through to header.
+    }
+    return "header";
 }
 
 function onDownloadClick() {
@@ -249,27 +301,81 @@ function detectInputType(file) {
     return "unsupported";
 }
 
-async function minimizeVideo(file, targetBytes) {
-    const ffmpeg = await getFfmpeg();
-    state.ffmpegProgressCb = null;
-
+async function minimizeVideo(file, targetBytes, runMetrics) {
     const outputPath = "output.mov";
     const probePath = "duration.txt";
     const outputFilename = `${getBaseName(file.name)}-min.mov`;
-    const inputHandle = await prepareVideoInput(ffmpeg, file);
+    const inputExt = getExtension(file.name);
+
+    if (file.size <= targetBytes && inputExt === ".mov") {
+        setStatus("Video already under target. Skipping transcode.", "success");
+        appendMetricNote(runMetrics, "passthrough");
+        return {
+            blob: file,
+            filename: outputFilename,
+        };
+    }
+
+    beginStage(runMetrics, "load");
+    const ffmpeg = await getFfmpeg(file.size);
+    endStage(runMetrics, "load", { mode: state.ffmpegMode });
+
+    state.ffmpegProgressCb = null;
+    state.lastProgressUpdateAt = 0;
+    const inputHandle = await prepareVideoInputWithMetrics(ffmpeg, file, runMetrics);
 
     try {
-        const durationSeconds = await probeDurationSeconds(ffmpeg, inputHandle.inputPath, probePath);
+        beginStage(runMetrics, "metadata");
+        let durationSeconds = await probeDurationSecondsFromBrowser(file);
+        let durationSource = "browser";
+        if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+            durationSeconds = await probeDurationSeconds(ffmpeg, inputHandle.inputPath, probePath);
+            durationSource = Number.isFinite(durationSeconds) ? "ffprobe" : "unknown";
+        }
+        endStage(runMetrics, "metadata", {
+            durationSeconds: Number.isFinite(durationSeconds) ? Number(durationSeconds.toFixed(3)) : null,
+            durationSource,
+        });
+
         const etaBand = estimateVideoEtaBand(durationSeconds, state.ffmpegMode);
         setStatus(`Minimizing video (attempt 1)... ${etaBand}. Browser FFmpeg is slower than native.`, "info");
 
-        const primaryProfile = buildVideoEncodeProfile({ targetBytes, durationSeconds, aggressive: false });
+        if (shouldTryRemuxOnly(file, targetBytes)) {
+            beginStage(runMetrics, "remux");
+            const remuxAttempt = await runVideoRemuxAttempt({
+                ffmpeg,
+                inputPath: inputHandle.inputPath,
+                outputPath,
+            });
+            endStage(runMetrics, "remux", {
+                success: Boolean(remuxAttempt),
+                outputBytes: remuxAttempt?.blob?.size ?? null,
+            });
+
+            if (remuxAttempt && remuxAttempt.blob.size <= targetBytes) {
+                appendMetricNote(runMetrics, "remux-only");
+                return {
+                    blob: remuxAttempt.blob,
+                    filename: outputFilename,
+                };
+            }
+        }
+
+        const copyAudioSafe = canAttemptAudioCopy(file);
+        const primaryProfile = buildVideoEncodeProfile({
+            targetBytes,
+            durationSeconds,
+            aggressive: false,
+            copyAudioSafe,
+        });
+        beginStage(runMetrics, "encode");
         let bestAttempt = await runVideoEncodeAttempt({
             ffmpeg,
             inputPath: inputHandle.inputPath,
             outputPath,
             profile: primaryProfile,
             attemptLabel: "attempt 1",
+            runMetrics,
         });
 
         if (bestAttempt.blob.size > Math.floor(targetBytes * FALLBACK_TARGET_MARGIN)) {
@@ -279,7 +385,8 @@ async function minimizeVideo(file, targetBytes) {
                 durationSeconds,
                 aggressive: true,
                 reductionFactor,
-                baseProfile: primaryProfile,
+                baseProfile: bestAttempt.profile,
+                copyAudioSafe: false,
             });
 
             const fallbackAttempt = await runVideoEncodeAttempt({
@@ -288,11 +395,21 @@ async function minimizeVideo(file, targetBytes) {
                 outputPath,
                 profile: fallbackProfile,
                 attemptLabel: "fallback attempt",
+                runMetrics,
             });
 
             if (fallbackAttempt.blob.size < bestAttempt.blob.size) {
                 bestAttempt = fallbackAttempt;
             }
+        }
+
+        const encodeMs = endStage(runMetrics, "encode", {
+            outputBytes: bestAttempt.blob.size,
+            attempts: bestAttempt.attempts,
+        });
+        const effectiveFps = computeEffectiveFps(durationSeconds, encodeMs);
+        if (Number.isFinite(effectiveFps)) {
+            runMetrics.effectiveEncodeFps = Number(effectiveFps.toFixed(2));
         }
 
         return {
@@ -307,14 +424,73 @@ async function minimizeVideo(file, targetBytes) {
     }
 }
 
-async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, attemptLabel }) {
+async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, attemptLabel, runMetrics }) {
     state.ffmpegProgressCb = (progress) => {
+        const now = performance.now();
+        if (progress < 1 && now - state.lastProgressUpdateAt < PROGRESS_UPDATE_INTERVAL_MS) {
+            return;
+        }
+        state.lastProgressUpdateAt = now;
         const percent = Math.min(100, Math.max(0, Math.round(progress * 100)));
         setStatus(`Minimizing video (${attemptLabel})... ${percent}% (approx.)`, "info");
     };
 
     await safelyDeleteFile(ffmpeg, outputPath);
+    let activeProfile = profile;
+    let attempts = 1;
+    let exitCode = await ffmpeg.exec(buildVideoEncodeArgs(inputPath, outputPath, activeProfile));
+    if (exitCode !== 0 && activeProfile.audioMode === "copy") {
+        attempts += 1;
+        activeProfile = {
+            ...activeProfile,
+            audioMode: "encode",
+            audioKbps: Math.min(activeProfile.audioKbps ?? 72, 64),
+        };
+        exitCode = await ffmpeg.exec(buildVideoEncodeArgs(inputPath, outputPath, activeProfile));
+    }
+
+    if (exitCode !== 0) {
+        throw new Error(`Video conversion failed during ${attemptLabel}.`);
+    }
+
+    beginStage(runMetrics, "output-read");
+    const outputData = await ffmpeg.readFile(outputPath);
+    endStage(runMetrics, "output-read", { outputBytes: outputData.length });
+    return {
+        blob: new Blob([outputData], { type: "video/quicktime" }),
+        profile: activeProfile,
+        attempts,
+    };
+}
+
+async function runVideoRemuxAttempt({ ffmpeg, inputPath, outputPath }) {
+    await safelyDeleteFile(ffmpeg, outputPath);
     const exitCode = await ffmpeg.exec([
+        "-i",
+        inputPath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-map_metadata",
+        "-1",
+        "-c",
+        "copy",
+        "-f",
+        "mov",
+        outputPath,
+    ]);
+    if (exitCode !== 0) {
+        return null;
+    }
+    const outputData = await ffmpeg.readFile(outputPath);
+    return {
+        blob: new Blob([outputData], { type: "video/quicktime" }),
+    };
+}
+
+function buildVideoEncodeArgs(inputPath, outputPath, profile) {
+    const args = [
         "-i",
         inputPath,
         "-map",
@@ -335,64 +511,93 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         `${profile.bufsizeKbps}k`,
         "-pix_fmt",
         "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        `${profile.audioKbps}k`,
-        "-movflags",
-        "+faststart",
-        "-f",
-        "mov",
-        outputPath,
-    ]);
+    ];
 
-    if (exitCode !== 0) {
-        throw new Error(`Video conversion failed during ${attemptLabel}.`);
+    const filters = [];
+    if (Number.isFinite(profile.maxFps) && profile.maxFps > 0) {
+        filters.push(`fps=${profile.maxFps}`);
+    }
+    if (Number.isFinite(profile.maxHeight) && profile.maxHeight > 0) {
+        filters.push(`scale=-2:${profile.maxHeight}`);
+    }
+    if (filters.length > 0) {
+        args.push("-vf", filters.join(","));
     }
 
-    const outputData = await ffmpeg.readFile(outputPath);
-    return {
-        blob: new Blob([outputData], { type: "video/quicktime" }),
-    };
+    if (profile.audioMode === "copy") {
+        args.push("-c:a", "copy");
+    } else {
+        args.push("-c:a", "aac", "-b:a", `${profile.audioKbps}k`);
+    }
+
+    args.push("-f", "mov", outputPath);
+    return args;
 }
 
-function buildVideoEncodeProfile({ targetBytes, durationSeconds, aggressive, reductionFactor = 1, baseProfile = null }) {
+function buildVideoEncodeProfile({ targetBytes, durationSeconds, aggressive, reductionFactor = 1, baseProfile = null, copyAudioSafe = false }) {
     if (baseProfile) {
-        const videoKbps = Math.max(150, Math.floor(baseProfile.videoKbps * reductionFactor));
-        const audioKbps = aggressive ? 64 : baseProfile.audioKbps;
-        return {
-            preset: "veryfast",
+        const videoKbps = Math.max(140, Math.floor(baseProfile.videoKbps * reductionFactor));
+        const audioKbps = aggressive ? 56 : baseProfile.audioKbps;
+        const audioMode = aggressive ? "encode" : baseProfile.audioMode;
+        return buildProfileWithCaps({
+            preset: "ultrafast",
             videoKbps,
             audioKbps,
-            maxrateKbps: Math.max(videoKbps + 100, Math.floor(videoKbps * 1.2)),
-            bufsizeKbps: Math.max(videoKbps + 200, Math.floor(videoKbps * 2)),
-        };
+            audioMode,
+        });
     }
 
     const safeDuration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : 60;
     const targetPayloadBytes = Math.floor(targetBytes * TARGET_PAYLOAD_RATIO);
-    const targetTotalBps = Math.max(350_000, Math.floor((targetPayloadBytes * 8) / safeDuration));
+    const targetTotalBps = Math.max(320_000, Math.floor((targetPayloadBytes * 8) / safeDuration));
 
-    let audioBps = clamp(Math.floor(targetTotalBps * 0.12), 64_000, 128_000);
-    if (audioBps > Math.floor(targetTotalBps * 0.4)) {
-        audioBps = Math.floor(targetTotalBps * 0.4);
+    let audioBps = clamp(Math.floor(targetTotalBps * 0.11), 56_000, 112_000);
+    let audioMode = copyAudioSafe && targetTotalBps > 650_000 && !aggressive ? "copy" : "encode";
+    if (audioMode === "copy") {
+        audioBps = 96_000;
     }
 
-    let videoBps = Math.max(200_000, targetTotalBps - audioBps);
+    let videoBps = Math.max(180_000, targetTotalBps - audioBps);
     if (aggressive) {
-        videoBps = Math.max(150_000, Math.floor(videoBps * 0.78));
-        audioBps = 64_000;
+        videoBps = Math.max(140_000, Math.floor(videoBps * 0.76));
+        audioMode = "encode";
+        audioBps = 56_000;
     }
 
     const videoKbps = Math.floor(videoBps / 1000);
     const audioKbps = Math.floor(audioBps / 1000);
-
-    return {
-        preset: "veryfast",
+    return buildProfileWithCaps({
+        preset: "ultrafast",
         videoKbps,
         audioKbps,
-        maxrateKbps: Math.max(videoKbps + 100, Math.floor(videoKbps * 1.2)),
-        bufsizeKbps: Math.max(videoKbps + 200, Math.floor(videoKbps * 2)),
+        audioMode,
+    });
+}
+
+function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode }) {
+    let maxHeight = null;
+    let maxFps = null;
+
+    if (videoKbps <= 450) {
+        maxHeight = 480;
+        maxFps = 24;
+    } else if (videoKbps <= 650) {
+        maxHeight = 540;
+        maxFps = 24;
+    } else if (videoKbps <= 900) {
+        maxHeight = 720;
+        maxFps = 30;
+    }
+
+    return {
+        preset,
+        videoKbps,
+        audioKbps,
+        audioMode,
+        maxHeight,
+        maxFps,
+        maxrateKbps: Math.max(videoKbps + 80, Math.floor(videoKbps * 1.18)),
+        bufsizeKbps: Math.max(videoKbps + 160, Math.floor(videoKbps * 1.9)),
     };
 }
 
@@ -401,10 +606,72 @@ function estimateVideoEtaBand(durationSeconds, mode) {
         return "ETA unknown";
     }
 
-    const [minMultiplier, maxMultiplier] = mode === "mt" ? [0.8, 2.5] : [1.5, 4.5];
-    const minSeconds = durationSeconds * minMultiplier;
-    const maxSeconds = durationSeconds * maxMultiplier;
-    return `ETA ~${formatDuration(minSeconds)}-${formatDuration(maxSeconds)}`;
+    if (mode === "mt-fast") {
+        return `ETA ~${formatDuration(durationSeconds * 0.7)}-${formatDuration(durationSeconds * 2.2)}`;
+    }
+    if (mode === "st-large") {
+        return `ETA ~${formatDuration(durationSeconds * 1.3)}-${formatDuration(durationSeconds * 3.8)}`;
+    }
+    return `ETA ~${formatDuration(durationSeconds * 1.1)}-${formatDuration(durationSeconds * 3.2)}`;
+}
+
+function shouldTryRemuxOnly(file, targetBytes) {
+    const ext = getExtension(file.name);
+    if (ext === ".mov" || ext === ".avi") {
+        return false;
+    }
+    return file.size <= Math.floor(targetBytes * REMUX_MARGIN_RATIO);
+}
+
+function canAttemptAudioCopy(file) {
+    const ext = getExtension(file.name);
+    if (ext === ".mp4" || ext === ".mov" || ext === ".m4v") {
+        return true;
+    }
+    const type = (file.type || "").toLowerCase();
+    return type === "video/mp4" || type === "video/quicktime";
+}
+
+function computeEffectiveFps(durationSeconds, encodeMs) {
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || !Number.isFinite(encodeMs) || encodeMs <= 0) {
+        return null;
+    }
+    return durationSeconds / (encodeMs / 1000);
+}
+
+async function probeDurationSecondsFromBrowser(file) {
+    if (typeof document === "undefined") {
+        return null;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+
+    try {
+        const duration = await new Promise((resolve) => {
+            const onLoadedMetadata = () => {
+                cleanup();
+                resolve(video.duration);
+            };
+            const onError = () => {
+                cleanup();
+                resolve(null);
+            };
+            const cleanup = () => {
+                video.removeEventListener("loadedmetadata", onLoadedMetadata);
+                video.removeEventListener("error", onError);
+            };
+            video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
+            video.addEventListener("error", onError, { once: true });
+            video.src = objectUrl;
+        });
+        return Number.isFinite(duration) && duration > 0 ? duration : null;
+    } finally {
+        video.removeAttribute("src");
+        video.load();
+        URL.revokeObjectURL(objectUrl);
+    }
 }
 
 async function probeDurationSeconds(ffmpeg, inputPath, outputPath) {
@@ -460,6 +727,15 @@ async function prepareVideoInput(ffmpeg, file) {
     }
 }
 
+async function prepareVideoInputWithMetrics(ffmpeg, file, runMetrics) {
+    beginStage(runMetrics, "input");
+    const inputHandle = await prepareVideoInput(ffmpeg, file);
+    endStage(runMetrics, "input", {
+        strategy: inputHandle.mounted ? "workerfs" : "writeFile",
+    });
+    return inputHandle;
+}
+
 async function cleanupVideoInput(ffmpeg, inputHandle) {
     if (inputHandle.mounted) {
         await safelyUnmount(ffmpeg, inputHandle.mountPoint);
@@ -469,24 +745,36 @@ async function cleanupVideoInput(ffmpeg, inputHandle) {
     await safelyDeleteFile(ffmpeg, inputHandle.inputPath);
 }
 
-function getRuntimeModePriority(isIsolated) {
+function getRuntimeModePriority(isIsolated, fileSizeBytes = null) {
+    const prefersLarge = !Number.isFinite(fileSizeBytes) || fileSizeBytes >= ST_LARGE_THRESHOLD_BYTES;
     if (isIsolated) {
-        return ["mt", "st"];
+        return prefersLarge ? ["mt-fast", "st-large", "st-lite"] : ["mt-fast", "st-lite", "st-large"];
     }
-    return ["st"];
+    return prefersLarge ? ["st-large", "st-lite"] : ["st-lite", "st-large"];
 }
 
 function createRuntimeCandidate(mode) {
     const classWorkerURL = new URL("./vendor/ffmpeg/ffmpeg/worker.js", import.meta.url).href;
 
-    if (mode === "mt") {
+    if (mode === "mt-fast") {
         return {
             mode,
             loadOptions: {
                 classWorkerURL,
-                coreURL: new URL("./vendor/ffmpeg/core-mt/ffmpeg-core.js", import.meta.url).href,
-                wasmURL: new URL("./vendor/ffmpeg/core-mt/ffmpeg-core.wasm", import.meta.url).href,
-                workerURL: new URL("./vendor/ffmpeg/core-mt/ffmpeg-core.worker.js", import.meta.url).href,
+                coreURL: new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.js", import.meta.url).href,
+                wasmURL: new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.wasm", import.meta.url).href,
+                workerURL: new URL("./vendor/ffmpeg/core-mt-fast/ffmpeg-core.worker.js", import.meta.url).href,
+            },
+        };
+    }
+
+    if (mode === "st-lite") {
+        return {
+            mode,
+            loadOptions: {
+                classWorkerURL,
+                coreURL: new URL("./vendor/ffmpeg/core-st-lite/ffmpeg-core.js", import.meta.url).href,
+                wasmURL: new URL("./vendor/ffmpeg/core-st-lite/ffmpeg-core.wasm", import.meta.url).href,
             },
         };
     }
@@ -495,13 +783,13 @@ function createRuntimeCandidate(mode) {
         mode,
         loadOptions: {
             classWorkerURL,
-            coreURL: new URL("./vendor/ffmpeg/core/ffmpeg-core.js", import.meta.url).href,
-            wasmURL: new URL("./vendor/ffmpeg/core/ffmpeg-core.wasm", import.meta.url).href,
+            coreURL: new URL("./vendor/ffmpeg/core-st-large/ffmpeg-core.js", import.meta.url).href,
+            wasmURL: new URL("./vendor/ffmpeg/core-st-large/ffmpeg-core.wasm", import.meta.url).href,
         },
     };
 }
 
-async function getFfmpeg() {
+async function getFfmpeg(fileSizeBytes = null) {
     if (state.ffmpeg) {
         return state.ffmpeg;
     }
@@ -509,7 +797,8 @@ async function getFfmpeg() {
     if (!state.ffmpegLoader) {
         state.ffmpegLoader = (async () => {
             const isIsolated = Boolean(globalThis.crossOriginIsolated);
-            const modePriority = getRuntimeModePriority(isIsolated);
+            const modePriority = getRuntimeModePriority(isIsolated, fileSizeBytes);
+            state.ffmpegPreferredMode = modePriority[0];
             let lastError = null;
 
             for (const mode of modePriority) {
@@ -543,16 +832,20 @@ async function getFfmpeg() {
         state.ffmpegLoader = null;
         state.ffmpeg = null;
         state.ffmpegMode = "unknown";
+        state.ffmpegPreferredMode = "unknown";
         setEngineBadge("error", "Engine: Unavailable");
         throw error;
     }
 }
 
-async function minimizeImage(file, targetBytes) {
+async function minimizeImage(file, targetBytes, runMetrics) {
+    beginStage(runMetrics, "image-read");
     setStatus("Reading image...", "info");
     const bitmap = await createImageBitmap(file);
+    endStage(runMetrics, "image-read");
 
     try {
+        beginStage(runMetrics, "image-encode");
         const hasAlpha = await imageHasAlpha(bitmap);
         const scaleSteps = [1, 0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44];
         const qualitySteps = [0.9, 0.82, 0.74, 0.66, 0.58, 0.5, 0.42];
@@ -588,6 +881,10 @@ async function minimizeImage(file, targetBytes) {
                     const percent = Math.round(((scaleIndex + 1) / scaleSteps.length) * 100);
                     setStatus(`Minimizing image... ${percent}%`, "info");
                     if (blob.size <= targetBytes) {
+                        endStage(runMetrics, "image-encode", {
+                            outputBytes: blob.size,
+                            mimeType,
+                        });
                         return {
                             blob,
                             filename: `${getBaseName(file.name)}-min${extensionForMimeType(mimeType)}`,
@@ -601,6 +898,10 @@ async function minimizeImage(file, targetBytes) {
             throw new Error("Image conversion failed.");
         }
 
+        endStage(runMetrics, "image-encode", {
+            outputBytes: bestBlob.size,
+            mimeType: bestMimeType,
+        });
         return {
             blob: bestBlob,
             filename: `${getBaseName(file.name)}-min${extensionForMimeType(bestMimeType)}`,
@@ -650,6 +951,65 @@ function canvasToBlob(canvas, mimeType, quality) {
             reject(new Error("Unable to encode image."));
         }, mimeType, quality);
     });
+}
+
+function startRunMetrics(kind) {
+    return {
+        kind,
+        startedAt: performance.now(),
+        endedAt: null,
+        totalMs: null,
+        status: "running",
+        runtimeMode: state.ffmpegMode,
+        runtimePreferred: state.ffmpegPreferredMode,
+        stages: {},
+        notes: [],
+        effectiveEncodeFps: null,
+    };
+}
+
+function beginStage(runMetrics, stageName) {
+    if (!runMetrics || !stageName) {
+        return;
+    }
+    runMetrics.stages[stageName] = {
+        startedAt: performance.now(),
+    };
+}
+
+function endStage(runMetrics, stageName, extra = {}) {
+    if (!runMetrics || !stageName) {
+        return null;
+    }
+    const stage = runMetrics.stages[stageName];
+    if (!stage || !Number.isFinite(stage.startedAt)) {
+        return null;
+    }
+    const endedAt = performance.now();
+    const ms = Math.max(0, endedAt - stage.startedAt);
+    runMetrics.stages[stageName] = {
+        ms: Number(ms.toFixed(2)),
+        ...extra,
+    };
+    return ms;
+}
+
+function endRunMetrics(runMetrics, status) {
+    if (!runMetrics) {
+        return;
+    }
+    runMetrics.endedAt = performance.now();
+    runMetrics.totalMs = Number(Math.max(0, runMetrics.endedAt - runMetrics.startedAt).toFixed(2));
+    runMetrics.status = status;
+    runMetrics.runtimeMode = state.ffmpegMode;
+    runMetrics.runtimePreferred = state.ffmpegPreferredMode;
+}
+
+function appendMetricNote(runMetrics, note) {
+    if (!runMetrics || !note) {
+        return;
+    }
+    runMetrics.notes.push(note);
 }
 
 async function safelyDeleteFile(ffmpeg, path) {
@@ -726,6 +1086,16 @@ function formatDuration(seconds) {
         return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
     }
     return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatDurationMs(ms) {
+    if (!Number.isFinite(ms) || ms < 0) {
+        return "-";
+    }
+    if (ms < 1000) {
+        return `${Math.round(ms)}ms`;
+    }
+    return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function clamp(value, min, max) {

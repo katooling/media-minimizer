@@ -6,7 +6,14 @@
   "scripts": {
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "test:e2e:debug": "playwright test --debug"
+    "test:e2e:debug": "playwright test --debug",
+    "bench:video": "node tests/e2e/bench/video-benchmark.js",
+    "core:build:st-lite": "./tools/ffmpeg-core/build-core.sh st-lite",
+    "core:build:st-large": "./tools/ffmpeg-core/build-core.sh st-large",
+    "core:build:mt-fast": "./tools/ffmpeg-core/build-core.sh mt-fast",
+    "core:sync:st-lite": "./tools/ffmpeg-core/sync-vendor.sh st-lite",
+    "core:sync:st-large": "./tools/ffmpeg-core/sync-vendor.sh st-large",
+    "core:sync:mt-fast": "./tools/ffmpeg-core/sync-vendor.sh mt-fast"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2"
@@ -15,6 +22,7 @@
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/core-mt": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
-    "@ffmpeg/util": "^0.12.2"
+    "@ffmpeg/util": "^0.12.2",
+    "coi-serviceworker": "^0.1.7"
   }
 }
