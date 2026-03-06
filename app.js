@@ -2,6 +2,7 @@ import { FFmpeg } from "./vendor/ffmpeg/ffmpeg/index.js";
 import { fetchFile } from "./vendor/ffmpeg/util/index.js";
 
 const elements = {
+    engineBadge: document.getElementById("engineBadge"),
     dropZone: document.getElementById("dropZone"),
     fileInput: document.getElementById("fileInput"),
     fileSummary: document.getElementById("fileSummary"),
@@ -40,6 +41,7 @@ function init() {
     elements.dropZone.addEventListener("drop", onDrop);
     elements.minimizeBtn.addEventListener("click", onMinimizeClick);
     elements.downloadBtn.addEventListener("click", onDownloadClick);
+    setEngineBadge("loading", "Engine: Loading");
     setStatus("Preparing local engine... Drop a video or image to start.", "info");
     warmupFfmpeg();
 }
@@ -48,11 +50,13 @@ async function warmupFfmpeg() {
     try {
         await getFfmpeg();
         state.ffmpegPreloadDone = true;
+        setEngineBadge("ready", "Engine: Ready");
         if (!state.processing && !state.inputFile) {
             setStatus("Ready. Drop a video or image to start.", "info");
         }
     } catch (error) {
         state.ffmpegPreloadDone = false;
+        setEngineBadge("error", "Engine: Unavailable");
         if (!state.inputFile) {
             setStatus("Image minimize is ready. Video engine failed to preload; retry on minimize.", "error");
         }
@@ -197,6 +201,11 @@ function setStatus(text, kind) {
     elements.status.className = `notice ${kind}`;
 }
 
+function setEngineBadge(kind, text) {
+    elements.engineBadge.textContent = text;
+    elements.engineBadge.className = `engine-badge ${kind}`;
+}
+
 function onDownloadClick() {
     if (!state.outputBlob || !state.downloadUrl) {
         return;
@@ -326,6 +335,7 @@ async function getFfmpeg() {
             });
 
             state.ffmpeg = ffmpeg;
+            setEngineBadge("ready", "Engine: Ready");
             return ffmpeg;
         })();
     }
@@ -334,6 +344,7 @@ async function getFfmpeg() {
     } catch (error) {
         state.ffmpegLoader = null;
         state.ffmpeg = null;
+        setEngineBadge("error", "Engine: Unavailable");
         throw error;
     }
 }

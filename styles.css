@@ -43,10 +43,46 @@ body {
     margin-bottom: 16px;
 }
 
+.title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
 h1 {
     font-size: 28px;
     font-weight: 700;
     letter-spacing: -0.02em;
+}
+
+.engine-badge {
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    background: #f3f4f6;
+    color: var(--muted);
+}
+
+.engine-badge.loading {
+    background: #fff4dd;
+    color: #8a5a00;
+    border-color: #f4dfad;
+}
+
+.engine-badge.ready {
+    background: var(--success-bg);
+    color: var(--success-text);
+    border-color: #bbf7d0;
+}
+
+.engine-badge.error {
+    background: var(--danger-bg);
+    color: var(--danger-text);
+    border-color: #fecaca;
 }
 
 .subtle {
