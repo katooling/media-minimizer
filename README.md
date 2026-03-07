@@ -44,7 +44,7 @@ Video path uses fast defaults:
 - Browser video dimensions are used to avoid unnecessary scale filters.
 - One-pass target-bitrate encode, optional bounded fallback only if needed.
 - `ultrafast` preset.
-- `zerolatency` tune.
+- `zerolatency` tune on ST path (disabled on MT path due known MT instability on some inputs).
 - Progress updates throttled to reduce UI overhead.
 - Audio strategy adapts: copy when likely safe, otherwise AAC re-encode.
 - Auto caps fps/resolution at low bitrates.
@@ -113,10 +113,31 @@ Open: `http://127.0.0.1:8000`
 ```bash
 cd /Users/mkamar/Non_Work/Projects/media-minimizer
 npm install
+npm run fixtures:download:web
 npm run test:e2e
 npm run test:e2e:real-video
 npm run test:e2e:real-video:mt
 npm run bench:video
+```
+
+Fixture matrix controls:
+
+```bash
+# all video fixtures from tests/e2e/fixtures/video-fixtures.json
+npm run test:e2e:all
+
+# only smoke-tagged fixture subset
+npm run test:e2e:smoke
+
+# run only video conversion matrix tests
+npm run test:e2e:video:all
+npm run test:e2e:video:smoke
+
+# select explicit fixture ids (comma-separated)
+VIDEO_FIXTURE_IDS=web-webm-640x360,web-mov-640x360 npm run test:e2e -- --grep "video flow converts"
+
+# override fixture max-size target for conversion stress runs
+VIDEO_FIXTURE_MAX_SIZE_MB=0.005 npm run test:e2e:video:all
 ```
 
 `test:e2e:real-video` uses:
@@ -128,6 +149,13 @@ npm run bench:video
   - `~/Downloads/Screen Recording 2025-12-11 at 3.04.37 PM.mov`
 - starts a local static server automatically for the smoke run
 - `test:e2e:real-video:mt` additionally asserts that MT was attempted
+
+## Web Test Fixtures
+
+Generic, small web fixtures live in `tests/e2e/fixtures/web` and are used for cross-format conversion coverage (`.mp4`, `.webm`, `.mov`).
+
+- Source and checksums: `tests/e2e/fixtures/WEB_FIXTURES.md`
+- Redownload helper: `npm run fixtures:download:web`
 
 ## Agent E2E Workflow
 

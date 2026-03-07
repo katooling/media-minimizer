@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "videos": [
+    {
+      "id": "legacy-sample-mp4",
+      "path": "sample.mp4",
+      "uploadName": "legacy-sample-force-encode.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.001,
+      "tags": ["smoke", "legacy"]
+    },
+    {
+      "id": "web-mp4-640x360",
+      "path": "web/sample_640x360.mp4",
+      "uploadName": "web-sample-640x360.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.001,
+      "tags": ["smoke", "web"]
+    },
+    {
+      "id": "web-webm-640x360",
+      "path": "web/sample_640x360.webm",
+      "uploadName": "web-sample-640x360.webm",
+      "mimeType": "video/webm",
+      "maxSizeMb": 0.001,
+      "tags": ["all", "web"]
+    },
+    {
+      "id": "web-mov-640x360",
+      "path": "web/sample_640x360.mov",
+      "uploadName": "web-sample-640x360.mov",
+      "mimeType": "video/quicktime",
+      "maxSizeMb": 0.001,
+      "tags": ["all", "web", "quicktime"]
+    }
+  ]
+}
