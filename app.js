@@ -59,7 +59,7 @@ const TARGET_PAYLOAD_RATIO = 0.96;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const ST_LARGE_THRESHOLD_BYTES = 24 * 1024 * 1024;
 const REMUX_MARGIN_RATIO = 1.18;
-const ASSET_VERSION = "20260306-3";
+const ASSET_VERSION = "20260307-1";
 const PROGRESS_TICK_INTERVAL_MS = 250;
 const debugParams = typeof globalThis.location !== "undefined" ? new URLSearchParams(globalThis.location.search) : new URLSearchParams("");
 const DEBUG_MODE = debugParams.get("debug") === "1";
@@ -73,6 +73,9 @@ const ENCODE_ACTIVITY_HINT_MS = 5_000;
 const ENCODE_WATCHDOG_INTERVAL_MS = 1_000;
 const ENCODE_HARD_STALL_MIN_MS = 120_000;
 const ENCODE_HARD_STALL_MAX_MS = 420_000;
+const MT_HARD_STALL_MIN_MS = 35_000;
+const MT_HARD_STALL_MAX_MS = 180_000;
+const MT_SOFT_STALL_THRESHOLD_MS = 8_000;
 const ENCODE_TIMEOUT_MS = Number.isFinite(parsedDebugTimeoutMs) && parsedDebugTimeoutMs > 1000 ? parsedDebugTimeoutMs : 12 * 60 * 1000;
 const FFMPEG_ERROR_TAIL_LIMIT = 120;
 const FILTER_GRAPH_ERROR_PATTERNS = [
@@ -884,7 +887,9 @@ function startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart)
     const encodeStartedAt = performance.now();
     const attemptMode = modeAtStart || state.ffmpegMode;
     const hardStallMs = computeHardStallThresholdMs(durationSeconds, attemptMode);
+    const softStallMs = getSoftSilenceThresholdMs(attemptMode);
     let softWarningShown = false;
+    let lastCountdownSecond = null;
     let stopped = false;
     let stallError = null;
 
@@ -895,7 +900,7 @@ function startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart)
         const now = performance.now();
         const lastActivityAt = Math.max(state.lastProgressEventAt || 0, state.lastLogEventAt || 0, encodeStartedAt);
         const silenceMs = now - lastActivityAt;
-        if (silenceMs < ENCODE_STALL_THRESHOLD_MS) {
+        if (silenceMs < softStallMs) {
             return;
         }
         if (!softWarningShown) {
@@ -903,13 +908,27 @@ function startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart)
             traceEvent("encode-silent", {
                 attemptLabel,
                 silenceMs: Math.round(silenceMs),
+                softStallMs: Math.round(softStallMs),
                 hardStallMs: Math.round(hardStallMs),
                 mode: attemptMode,
             });
             setProgressUpdate("Still processing (quiet encode phase)", null);
-            setStatus("Still processing. Some browser encodes are silent for a while.", "info");
+            if (attemptMode === "mt-fast") {
+                const seconds = Math.max(1, Math.ceil((hardStallMs - silenceMs) / 1000));
+                lastCountdownSecond = seconds;
+                setStatus(`MT is quiet. Auto-fallback to ST in ~${seconds}s if still inactive.`, "info");
+            } else {
+                setStatus("Still processing. Some browser encodes are silent for a while.", "info");
+            }
         }
         if (silenceMs < hardStallMs) {
+            if (attemptMode === "mt-fast") {
+                const seconds = Math.max(1, Math.ceil((hardStallMs - silenceMs) / 1000));
+                if (seconds !== lastCountdownSecond) {
+                    lastCountdownSecond = seconds;
+                    setStatus(`MT is quiet. Auto-fallback to ST in ~${seconds}s if still inactive.`, "info");
+                }
+            }
             return;
         }
         const elapsedMs = Math.max(0, now - encodeStartedAt);
@@ -1228,9 +1247,19 @@ function computeEffectiveFps(durationSeconds, encodeMs) {
 
 function computeHardStallThresholdMs(durationSeconds, mode) {
     const safeDuration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : 60;
-    const modeFactor = mode === "mt-fast" ? 3.2 : 5.2;
-    const derivedMs = safeDuration * modeFactor * 1000;
+    if (mode === "mt-fast") {
+        const derivedMs = safeDuration * 1.1 * 1000;
+        return clamp(Math.round(derivedMs), MT_HARD_STALL_MIN_MS, MT_HARD_STALL_MAX_MS);
+    }
+    const derivedMs = safeDuration * 5.2 * 1000;
     return clamp(Math.round(derivedMs), ENCODE_HARD_STALL_MIN_MS, ENCODE_HARD_STALL_MAX_MS);
+}
+
+function getSoftSilenceThresholdMs(mode) {
+    if (mode === "mt-fast") {
+        return MT_SOFT_STALL_THRESHOLD_MS;
+    }
+    return ENCODE_STALL_THRESHOLD_MS;
 }
 
 function classifyEncodeFailure({ attemptLabel, mode, profile }) {
