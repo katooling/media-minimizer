@@ -35,6 +35,84 @@
                 <button id="downloadBtn" class="btn btn-secondary" disabled>Download</button>
             </div>
 
+            <details id="advancedSection" class="advanced">
+                <summary>Advanced (optional)</summary>
+                <div class="advanced-head">
+                    <p class="advanced-note">Leave everything on Auto for the current default behavior.</p>
+                    <button id="advancedResetBtn" type="button" class="btn btn-secondary btn-compact">Reset to Auto</button>
+                </div>
+                <div class="advanced-grid">
+                    <label class="field" for="advancedSpeedSelect">
+                        <span class="field-label">
+                            Processing speed
+                            <abbr class="hint" title="Changes encoder preset. Faster = quicker but lower quality per byte." aria-label="Processing speed help">?</abbr>
+                        </span>
+                        <select id="advancedSpeedSelect">
+                            <option value="auto" selected>Auto (default)</option>
+                            <option value="balanced">Balanced</option>
+                            <option value="quality">Better quality (slower)</option>
+                        </select>
+                    </label>
+
+                    <label class="field" for="advancedResolutionSelect">
+                        <span class="field-label">
+                            Max resolution
+                            <abbr class="hint" title="Caps output frame size. Lower values reduce file size and encoding cost." aria-label="Max resolution help">?</abbr>
+                        </span>
+                        <select id="advancedResolutionSelect">
+                            <option value="auto" selected>Auto (default)</option>
+                            <option value="1080">1080p</option>
+                            <option value="720">720p</option>
+                            <option value="540">540p</option>
+                            <option value="480">480p</option>
+                            <option value="360">360p</option>
+                            <option value="240">240p</option>
+                            <option value="none">No cap</option>
+                        </select>
+                    </label>
+
+                    <label class="field" for="advancedFpsSelect">
+                        <span class="field-label">
+                            Max frame rate
+                            <abbr class="hint" title="Caps output frames per second. Lower FPS usually shrinks size and improves speed." aria-label="Max frame rate help">?</abbr>
+                        </span>
+                        <select id="advancedFpsSelect">
+                            <option value="auto" selected>Auto (default)</option>
+                            <option value="60">60 fps</option>
+                            <option value="30">30 fps</option>
+                            <option value="24">24 fps</option>
+                        </select>
+                    </label>
+
+                    <label class="field" for="advancedAudioSelect">
+                        <span class="field-label">
+                            Audio quality
+                            <abbr class="hint" title="Sets AAC bitrate or keeps source audio when compatible." aria-label="Audio quality help">?</abbr>
+                        </span>
+                        <select id="advancedAudioSelect">
+                            <option value="auto" selected>Auto (default)</option>
+                            <option value="small-64">Smaller file (AAC 64k)</option>
+                            <option value="balanced-96">Balanced (AAC 96k)</option>
+                            <option value="high-128">Better audio (AAC 128k)</option>
+                            <option value="copy-prefer">Keep original when possible</option>
+                        </select>
+                    </label>
+
+                    <label class="field" for="advancedThreadsSelect">
+                        <span class="field-label">
+                            CPU usage
+                            <abbr class="hint" title="Sets encoder thread count. More threads can be faster but may increase CPU load." aria-label="CPU usage help">?</abbr>
+                        </span>
+                        <select id="advancedThreadsSelect">
+                            <option value="auto" selected>Auto (default)</option>
+                            <option value="1">1 thread</option>
+                            <option value="2">2 threads</option>
+                            <option value="4">4 threads</option>
+                        </select>
+                    </label>
+                </div>
+            </details>
+
             <div id="progressWrap" class="progress-wrap" hidden>
                 <progress id="progressBar" class="progress-bar" max="100"></progress>
                 <div id="progressMeta" class="progress-meta">Preparing...</div>

@@ -20,6 +20,12 @@ const elements = {
     outputSize: document.getElementById("outputSize"),
     savedSize: document.getElementById("savedSize"),
     outputName: document.getElementById("outputName"),
+    advancedSpeedSelect: document.getElementById("advancedSpeedSelect"),
+    advancedResolutionSelect: document.getElementById("advancedResolutionSelect"),
+    advancedFpsSelect: document.getElementById("advancedFpsSelect"),
+    advancedAudioSelect: document.getElementById("advancedAudioSelect"),
+    advancedThreadsSelect: document.getElementById("advancedThreadsSelect"),
+    advancedResetBtn: document.getElementById("advancedResetBtn"),
 };
 
 const state = {
@@ -51,6 +57,7 @@ const state = {
     runStartedAtMs: 0,
     lastProgressEventAt: 0,
     lastLogEventAt: 0,
+    lastEncodePlan: null,
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -97,6 +104,18 @@ const MT_RUNTIME_ERROR_PATTERNS = [
     /runtimeerror/i,
     /worker sent an error/i,
 ];
+const ADVANCED_SPEED_VALUES = new Set(["auto", "balanced", "quality"]);
+const ADVANCED_RESOLUTION_VALUES = new Set(["auto", "1080", "720", "540", "480", "360", "240", "none"]);
+const ADVANCED_FPS_VALUES = new Set(["auto", "60", "30", "24"]);
+const ADVANCED_AUDIO_VALUES = new Set(["auto", "small-64", "balanced-96", "high-128", "copy-prefer"]);
+const ADVANCED_THREADS_VALUES = new Set(["auto", "1", "2", "4"]);
+const DEFAULT_ADVANCED_VIDEO_SETTINGS = Object.freeze({
+    speed: "auto",
+    maxHeight: "auto",
+    maxFps: "auto",
+    audio: "auto",
+    threads: "auto",
+});
 const DROP_TITLE_DEFAULT = "Drop file here";
 const DROP_NOTE_DEFAULT = "or click to select a video/image";
 const DROP_TITLE_READY = "File selected";
@@ -113,6 +132,12 @@ function init() {
     elements.dropZone.addEventListener("drop", onDrop);
     elements.minimizeBtn.addEventListener("click", onMinimizeClick);
     elements.downloadBtn.addEventListener("click", onDownloadClick);
+    elements.advancedSpeedSelect?.addEventListener("change", onAdvancedSettingsChange);
+    elements.advancedResolutionSelect?.addEventListener("change", onAdvancedSettingsChange);
+    elements.advancedFpsSelect?.addEventListener("change", onAdvancedSettingsChange);
+    elements.advancedAudioSelect?.addEventListener("change", onAdvancedSettingsChange);
+    elements.advancedThreadsSelect?.addEventListener("change", onAdvancedSettingsChange);
+    elements.advancedResetBtn?.addEventListener("click", onAdvancedResetClick);
 
     // Exposed for E2E assertions of runtime selection behavior.
     if (typeof window !== "undefined") {
@@ -124,6 +149,12 @@ function init() {
             getAppEvents: () => state.appEvents.map((entry) => ({ ...entry })),
             getLastRunSummary: () => buildLastRunSummary(),
             getLiveState: () => getLiveDebugState(),
+            getAdvancedVideoSettings: () => ({ ...getAdvancedVideoSettings() }),
+            getLastEncodePlan: () => (state.lastEncodePlan ? {
+                ...state.lastEncodePlan,
+                profile: state.lastEncodePlan.profile ? { ...state.lastEncodePlan.profile } : null,
+                args: Array.isArray(state.lastEncodePlan.args) ? [...state.lastEncodePlan.args] : [],
+            } : null),
             getRuntimeState: () => ({
                 activeMode: state.ffmpegMode,
                 preferredMode: state.ffmpegPreferredMode,
@@ -138,6 +169,8 @@ function init() {
         isolationSource: getIsolationSource(),
     });
     setEngineBadge("loading", "Engine: Loading");
+    applyAdvancedVideoSettings(DEFAULT_ADVANCED_VIDEO_SETTINGS);
+    refreshAdvancedResetButtonState();
     renderFileSummary();
     updateDropZoneState();
     resetProgressState();
@@ -237,6 +270,94 @@ function setInputFile(file, source = "unknown") {
     setStatus(`Ready to minimize ${typeLabel}.`, "info");
 }
 
+function onAdvancedSettingsChange() {
+    refreshAdvancedResetButtonState();
+    recordAppEvent("advanced-settings-changed", getAdvancedVideoSettings());
+}
+
+function onAdvancedResetClick() {
+    applyAdvancedVideoSettings(DEFAULT_ADVANCED_VIDEO_SETTINGS);
+    refreshAdvancedResetButtonState();
+    recordAppEvent("advanced-settings-reset", getAdvancedVideoSettings());
+}
+
+function normalizeAdvancedChoice(rawValue, allowedValues, fallbackValue) {
+    const candidate = String(rawValue || "").trim().toLowerCase();
+    if (allowedValues.has(candidate)) {
+        return candidate;
+    }
+    return fallbackValue;
+}
+
+function getAdvancedVideoSettings() {
+    const speed = normalizeAdvancedChoice(
+        elements.advancedSpeedSelect?.value,
+        ADVANCED_SPEED_VALUES,
+        DEFAULT_ADVANCED_VIDEO_SETTINGS.speed
+    );
+    const maxHeight = normalizeAdvancedChoice(
+        elements.advancedResolutionSelect?.value,
+        ADVANCED_RESOLUTION_VALUES,
+        DEFAULT_ADVANCED_VIDEO_SETTINGS.maxHeight
+    );
+    const maxFps = normalizeAdvancedChoice(
+        elements.advancedFpsSelect?.value,
+        ADVANCED_FPS_VALUES,
+        DEFAULT_ADVANCED_VIDEO_SETTINGS.maxFps
+    );
+    const audio = normalizeAdvancedChoice(
+        elements.advancedAudioSelect?.value,
+        ADVANCED_AUDIO_VALUES,
+        DEFAULT_ADVANCED_VIDEO_SETTINGS.audio
+    );
+    const threads = normalizeAdvancedChoice(
+        elements.advancedThreadsSelect?.value,
+        ADVANCED_THREADS_VALUES,
+        DEFAULT_ADVANCED_VIDEO_SETTINGS.threads
+    );
+    return {
+        speed,
+        maxHeight,
+        maxFps,
+        audio,
+        threads,
+    };
+}
+
+function applyAdvancedVideoSettings(settings = DEFAULT_ADVANCED_VIDEO_SETTINGS) {
+    if (elements.advancedSpeedSelect) {
+        elements.advancedSpeedSelect.value = settings.speed || DEFAULT_ADVANCED_VIDEO_SETTINGS.speed;
+    }
+    if (elements.advancedResolutionSelect) {
+        elements.advancedResolutionSelect.value = settings.maxHeight || DEFAULT_ADVANCED_VIDEO_SETTINGS.maxHeight;
+    }
+    if (elements.advancedFpsSelect) {
+        elements.advancedFpsSelect.value = settings.maxFps || DEFAULT_ADVANCED_VIDEO_SETTINGS.maxFps;
+    }
+    if (elements.advancedAudioSelect) {
+        elements.advancedAudioSelect.value = settings.audio || DEFAULT_ADVANCED_VIDEO_SETTINGS.audio;
+    }
+    if (elements.advancedThreadsSelect) {
+        elements.advancedThreadsSelect.value = settings.threads || DEFAULT_ADVANCED_VIDEO_SETTINGS.threads;
+    }
+}
+
+function isAdvancedVideoSettingsAuto(settings = null) {
+    const active = settings || getAdvancedVideoSettings();
+    return active.speed === DEFAULT_ADVANCED_VIDEO_SETTINGS.speed
+        && active.maxHeight === DEFAULT_ADVANCED_VIDEO_SETTINGS.maxHeight
+        && active.maxFps === DEFAULT_ADVANCED_VIDEO_SETTINGS.maxFps
+        && active.audio === DEFAULT_ADVANCED_VIDEO_SETTINGS.audio
+        && active.threads === DEFAULT_ADVANCED_VIDEO_SETTINGS.threads;
+}
+
+function refreshAdvancedResetButtonState() {
+    if (!elements.advancedResetBtn) {
+        return;
+    }
+    elements.advancedResetBtn.disabled = isAdvancedVideoSettingsAuto();
+}
+
 function renderFileSummary() {
     elements.fileSummary.classList.remove("ready", "processing");
     elements.fileSummary.replaceChildren();
@@ -298,9 +419,11 @@ async function onMinimizeClick() {
     }
 
     const targetMb = Number(elements.maxSizeInput.value);
+    const advancedSettings = getAdvancedVideoSettings();
     recordAppEvent("minimize-click", {
         hasFile: Boolean(state.inputFile),
         targetMb: Number.isFinite(targetMb) ? targetMb : null,
+        advancedSettings,
     });
     if (!Number.isFinite(targetMb) || targetMb <= 0) {
         setStatus("Max size must be a number greater than 0.", "error");
@@ -315,6 +438,7 @@ async function onMinimizeClick() {
     }
 
     setProcessing(true);
+    state.lastEncodePlan = null;
     clearOutput();
     setPendingResultState(inputType, state.inputFile);
     startProgressTracker(inputType === "video" ? "Minimizing video" : "Minimizing image");
@@ -720,6 +844,8 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             }
         }
 
+        const advancedSettings = getAdvancedVideoSettings();
+        runMetrics.advancedSettings = { ...advancedSettings };
         const copyAudioSafe = canAttemptAudioCopy(file);
         const primaryProfile = buildVideoEncodeProfile({
             targetBytes,
@@ -728,6 +854,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             copyAudioSafe,
             sourceHeight,
             runtimeMode: state.ffmpegMode,
+            advancedSettings,
         });
         setCurrentStage("encode");
         beginStage(runMetrics, "encode");
@@ -752,6 +879,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
                 copyAudioSafe: false,
                 sourceHeight,
                 runtimeMode: state.ffmpegMode,
+                advancedSettings,
             });
 
             const fallbackAttempt = await runVideoEncodeAttempt({
@@ -830,9 +958,16 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
     await safelyDeleteFile(ffmpeg, outputPath);
     let activeProfile = profile;
     let attempts = 1;
+    let activeArgs = buildVideoEncodeArgs(inputPath, outputPath, activeProfile);
+    setLastEncodePlan({
+        attemptLabel,
+        mode: modeAtStart,
+        profile: activeProfile,
+        args: activeArgs,
+    });
     let exitCode = await execVideoWithWatchdog({
         ffmpeg,
-        args: buildVideoEncodeArgs(inputPath, outputPath, activeProfile),
+        args: activeArgs,
         attemptLabel,
         inputPath,
         outputPath,
@@ -846,9 +981,16 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
             audioMode: "encode",
             audioKbps: Math.min(activeProfile.audioKbps ?? 72, 64),
         };
+        activeArgs = buildVideoEncodeArgs(inputPath, outputPath, activeProfile);
+        setLastEncodePlan({
+            attemptLabel: `${attemptLabel} (audio retry)`,
+            mode: modeAtStart,
+            profile: activeProfile,
+            args: activeArgs,
+        });
         exitCode = await execVideoWithWatchdog({
             ffmpeg,
-            args: buildVideoEncodeArgs(inputPath, outputPath, activeProfile),
+            args: activeArgs,
             attemptLabel: `${attemptLabel} (audio retry)`,
             inputPath,
             outputPath,
@@ -880,9 +1022,16 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
                 maxHeight: null,
                 forceNoFilters: true,
             };
+            activeArgs = buildVideoEncodeArgs(inputPath, outputPath, activeProfile);
+            setLastEncodePlan({
+                attemptLabel: `${attemptLabel} (filterless)`,
+                mode: modeAtStart,
+                profile: activeProfile,
+                args: activeArgs,
+            });
             exitCode = await execVideoWithWatchdog({
                 ffmpeg,
-                args: buildVideoEncodeArgs(inputPath, outputPath, activeProfile),
+                args: activeArgs,
                 attemptLabel: `${attemptLabel} (filterless)`,
                 inputPath,
                 outputPath,
@@ -914,6 +1063,16 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         blob: new Blob([outputData], { type: "video/quicktime" }),
         profile: activeProfile,
         attempts,
+    };
+}
+
+function setLastEncodePlan({ attemptLabel, mode, profile, args }) {
+    state.lastEncodePlan = {
+        attemptLabel: attemptLabel || "",
+        mode: mode || "unknown",
+        profile: profile ? { ...profile } : null,
+        args: Array.isArray(args) ? [...args] : [],
+        atIso: new Date().toISOString(),
     };
 }
 
@@ -1167,8 +1326,8 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         "-pix_fmt",
         "yuv420p",
     ];
-    if (profile.runtimeMode !== "mt-fast") {
-        args.push("-tune", "zerolatency");
+    if (profile.tune) {
+        args.push("-tune", profile.tune);
     }
 
     if (!profile.forceNoFilters) {
@@ -1203,18 +1362,26 @@ function buildVideoEncodeProfile({
     copyAudioSafe = false,
     sourceHeight = null,
     runtimeMode = "unknown",
+    advancedSettings = DEFAULT_ADVANCED_VIDEO_SETTINGS,
 }) {
+    const resolvedAdvanced = advancedSettings || DEFAULT_ADVANCED_VIDEO_SETTINGS;
+    const speedMode = resolvedAdvanced.speed || DEFAULT_ADVANCED_VIDEO_SETTINGS.speed;
+    const preset = resolvePresetFromSpeedMode(speedMode);
+
     if (baseProfile) {
         const videoKbps = Math.max(140, Math.floor(baseProfile.videoKbps * reductionFactor));
         const audioKbps = aggressive ? 56 : baseProfile.audioKbps;
         const audioMode = aggressive ? "encode" : baseProfile.audioMode;
         return buildProfileWithCaps({
-            preset: "ultrafast",
+            preset,
             videoKbps,
             audioKbps,
             audioMode,
             sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : baseProfile.sourceHeight,
             runtimeMode: runtimeMode || baseProfile.runtimeMode,
+            advancedSettings: resolvedAdvanced,
+            copyAudioSafe,
+            speedMode,
         });
     }
 
@@ -1238,16 +1405,113 @@ function buildVideoEncodeProfile({
     const videoKbps = Math.floor(videoBps / 1000);
     const audioKbps = Math.floor(audioBps / 1000);
     return buildProfileWithCaps({
-        preset: "ultrafast",
+        preset,
         videoKbps,
         audioKbps,
         audioMode,
         sourceHeight,
         runtimeMode,
+        advancedSettings: resolvedAdvanced,
+        copyAudioSafe,
+        speedMode,
     });
 }
 
-function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode, sourceHeight = null, runtimeMode = "unknown" }) {
+function resolvePresetFromSpeedMode(speedMode) {
+    if (speedMode === "balanced") {
+        return "veryfast";
+    }
+    if (speedMode === "quality") {
+        return "faster";
+    }
+    return "ultrafast";
+}
+
+function resolveDefaultTune(speedMode, runtimeMode) {
+    if (speedMode === "auto" && runtimeMode !== "mt-fast") {
+        return "zerolatency";
+    }
+    return null;
+}
+
+function resolveAdvancedMaxHeight(maxHeightMode) {
+    if (maxHeightMode === "1080") {
+        return 1080;
+    }
+    if (maxHeightMode === "720") {
+        return 720;
+    }
+    if (maxHeightMode === "540") {
+        return 540;
+    }
+    if (maxHeightMode === "480") {
+        return 480;
+    }
+    if (maxHeightMode === "360") {
+        return 360;
+    }
+    if (maxHeightMode === "240") {
+        return 240;
+    }
+    if (maxHeightMode === "none") {
+        return null;
+    }
+    return undefined;
+}
+
+function resolveAdvancedMaxFps(maxFpsMode) {
+    if (maxFpsMode === "60") {
+        return 60;
+    }
+    if (maxFpsMode === "30") {
+        return 30;
+    }
+    if (maxFpsMode === "24") {
+        return 24;
+    }
+    return undefined;
+}
+
+function resolveAudioOverride(audioMode, copyAudioSafe) {
+    if (audioMode === "small-64") {
+        return { audioMode: "encode", audioKbps: 64 };
+    }
+    if (audioMode === "balanced-96") {
+        return { audioMode: "encode", audioKbps: 96 };
+    }
+    if (audioMode === "high-128") {
+        return { audioMode: "encode", audioKbps: 128 };
+    }
+    if (audioMode === "copy-prefer") {
+        if (copyAudioSafe) {
+            return { audioMode: "copy", audioKbps: 96 };
+        }
+        return { audioMode: "encode", audioKbps: 96 };
+    }
+    return null;
+}
+
+function resolveAdvancedEncodeThreads(threadMode, runtimeMode, fallbackThreads) {
+    if (threadMode === "1" || threadMode === "2" || threadMode === "4") {
+        if (runtimeMode !== "mt-fast") {
+            return ST_ENCODE_THREADS;
+        }
+        return clamp(Number.parseInt(threadMode, 10), ST_ENCODE_THREADS, MT_THREADS_MAX);
+    }
+    return fallbackThreads;
+}
+
+function buildProfileWithCaps({
+    preset,
+    videoKbps,
+    audioKbps,
+    audioMode,
+    sourceHeight = null,
+    runtimeMode = "unknown",
+    advancedSettings = DEFAULT_ADVANCED_VIDEO_SETTINGS,
+    copyAudioSafe = false,
+    speedMode = "auto",
+}) {
     let maxHeight = null;
     let maxFps = null;
 
@@ -1265,13 +1529,40 @@ function buildProfileWithCaps({ preset, videoKbps, audioKbps, audioMode, sourceH
     if (Number.isFinite(sourceHeight) && Number.isFinite(maxHeight) && sourceHeight <= maxHeight) {
         maxHeight = null;
     }
-    const encodeThreads = selectEncodeThreads(runtimeMode, sourceHeight);
+    const advancedMaxHeight = resolveAdvancedMaxHeight(advancedSettings.maxHeight);
+    if (advancedMaxHeight === null) {
+        maxHeight = null;
+    } else if (Number.isFinite(advancedMaxHeight) && advancedMaxHeight > 0) {
+        maxHeight = advancedMaxHeight;
+        if (Number.isFinite(sourceHeight) && sourceHeight <= maxHeight) {
+            maxHeight = null;
+        }
+    }
+
+    const advancedMaxFps = resolveAdvancedMaxFps(advancedSettings.maxFps);
+    if (Number.isFinite(advancedMaxFps) && advancedMaxFps > 0) {
+        maxFps = advancedMaxFps;
+    }
+
+    let resolvedAudioMode = audioMode;
+    let resolvedAudioKbps = audioKbps;
+    const audioOverride = resolveAudioOverride(advancedSettings.audio, copyAudioSafe);
+    if (audioOverride) {
+        resolvedAudioMode = audioOverride.audioMode;
+        resolvedAudioKbps = audioOverride.audioKbps;
+    }
+
+    const defaultThreads = selectEncodeThreads(runtimeMode, sourceHeight);
+    const encodeThreads = resolveAdvancedEncodeThreads(advancedSettings.threads, runtimeMode, defaultThreads);
+    const tune = resolveDefaultTune(speedMode, runtimeMode);
 
     return {
         preset,
+        speedMode,
+        tune,
         videoKbps,
-        audioKbps,
-        audioMode,
+        audioKbps: resolvedAudioKbps,
+        audioMode: resolvedAudioMode,
         sourceHeight,
         runtimeMode,
         maxHeight,
@@ -1382,9 +1673,12 @@ function classifyEncodeFailure({ attemptLabel, mode, profile }) {
         mode,
         profile: {
             preset: profile?.preset || "",
+            speedMode: profile?.speedMode || "",
+            tune: profile?.tune || "",
             videoKbps: profile?.videoKbps || null,
             audioMode: profile?.audioMode || "",
             audioKbps: profile?.audioKbps || null,
+            encodeThreads: profile?.encodeThreads || null,
             forceNoFilters: Boolean(profile?.forceNoFilters),
         },
         terminalLine,
@@ -1768,11 +2062,13 @@ function beginRunTrace(kind) {
         runtimeMode: state.ffmpegMode,
         runtimePreferred: state.ffmpegPreferredMode,
         mockMode: DEBUG_MOCK_MODE || null,
+        advancedSettings: getAdvancedVideoSettings(),
     });
     recordAppEvent("run-start", {
         kind,
         runtimeMode: state.ffmpegMode,
         runtimePreferred: state.ffmpegPreferredMode,
+        advancedSettings: getAdvancedVideoSettings(),
     });
 }
 
@@ -1895,6 +2191,7 @@ function buildLastRunSummary() {
         runtimePreferred: metrics?.runtimePreferred || "unknown",
         runtimeFinal: metrics?.runtimeMode || "unknown",
         attemptedModes: Array.isArray(metrics?.attemptedModes) ? [...metrics.attemptedModes] : [],
+        advancedSettings: metrics?.advancedSettings ? { ...metrics.advancedSettings } : { ...DEFAULT_ADVANCED_VIDEO_SETTINGS },
         notes: Array.isArray(metrics?.notes) ? [...metrics.notes] : [],
         failureCode: metrics?.failureCode || null,
         failureMessage: metrics?.failureMessage || null,
@@ -1950,6 +2247,7 @@ function getLiveDebugState() {
         lastEventAgoMs: Number.isFinite(lastEventAgoMs) ? Number(lastEventAgoMs.toFixed(1)) : null,
         runtimeMode: state.ffmpegMode,
         runtimePreferred: state.ffmpegPreferredMode,
+        advancedSettings: getAdvancedVideoSettings(),
     };
 }
 
@@ -2033,6 +2331,7 @@ function startRunMetrics(kind) {
         stages: {},
         notes: [],
         effectiveEncodeFps: null,
+        advancedSettings: getAdvancedVideoSettings(),
         failureCode: null,
         failureMessage: null,
         failureDetails: null,

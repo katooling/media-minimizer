@@ -57,6 +57,23 @@ Video path uses fast defaults:
 
 The app also records stage timings (`load`, `input`, `metadata`, `encode`, `output-read`, total) and exposes them via `window.__mediaMinimizerDebug.getLastRunMetrics()`.
 
+## Advanced (Optional) Controls
+
+The UI now includes a collapsible Advanced section for video runs. All controls default to `Auto` and preserve current behavior until the user opts in.
+
+Available knobs:
+
+- Processing speed: `Auto`, `Balanced`, `Better quality (slower)`
+- Max resolution: `Auto`, explicit caps (`1080p` ... `240p`), or `No cap`
+- Max frame rate: `Auto`, `60`, `30`, `24`
+- Audio quality: `Auto`, AAC bitrate presets, or `Keep original when possible`
+- CPU usage: `Auto`, `1`, `2`, or `4` threads (MT runtime only; ST remains single-thread)
+
+UX helpers:
+
+- `Reset to Auto` button restores all advanced controls in one click.
+- Inline `?` glossary tooltips explain each knob in plain language.
+
 ## Local Debug / Stall Investigation
 
 Use `?debug=1` to enable structured console traces and local-only diagnostics.
@@ -69,6 +86,8 @@ Debug helpers:
 - `window.__mediaMinimizerDebug.getAppEvents()`
 - `window.__mediaMinimizerDebug.getLastRunSummary()`
 - `window.__mediaMinimizerDebug.getLiveState()`
+- `window.__mediaMinimizerDebug.getAdvancedVideoSettings()`
+- `window.__mediaMinimizerDebug.getLastEncodePlan()`
 
 Stall handling defaults:
 
