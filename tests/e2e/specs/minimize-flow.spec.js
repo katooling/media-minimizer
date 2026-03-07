@@ -228,6 +228,36 @@ test("advanced reset returns all controls to auto", async ({ page }) => {
     await expect(page.locator("#advancedResetBtn")).toBeDisabled();
 });
 
+test("advanced auto labels explain current default behavior", async ({ page }) => {
+    await page.goto("/");
+    await waitForEngineReady(page);
+
+    const autoLabels = await page.evaluate(() => {
+        const readLabel = (id) => {
+            const select = document.querySelector(id);
+            if (!select) {
+                return "";
+            }
+            const option = Array.from(select.options).find((entry) => entry.value === "auto");
+            return option ? option.textContent || "" : "";
+        };
+        return {
+            speed: readLabel("#advancedSpeedSelect"),
+            resolution: readLabel("#advancedResolutionSelect"),
+            fps: readLabel("#advancedFpsSelect"),
+            audio: readLabel("#advancedAudioSelect"),
+            threads: readLabel("#advancedThreadsSelect"),
+        };
+    });
+
+    expect(autoLabels.speed.toLowerCase()).toContain("recommended");
+    expect(autoLabels.resolution.toLowerCase()).toContain("adaptive");
+    expect(autoLabels.fps.toLowerCase()).toContain("adaptive");
+    expect(autoLabels.audio.toLowerCase()).toContain("adaptive");
+    expect(autoLabels.threads).toContain("ST=1");
+    expect(autoLabels.threads).toContain("MT=2-4");
+});
+
 test("advanced overrides map to encode profile and args", async ({ page }) => {
     test.setTimeout(120000);
     await page.goto("/");
@@ -273,6 +303,32 @@ test("advanced overrides map to encode profile and args", async ({ page }) => {
     const vfExpr = String(plan.args[vfArgIndex + 1] || "");
     expect(vfExpr).toContain("fps=24");
     expect(vfExpr).toContain("scale=-2:240");
+});
+
+test("video run keeps status high-level while progress panel carries details and eta", async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto("/");
+    await waitForEngineReady(page);
+    await uploadForcedEncodeVideo(page);
+
+    await page.locator("#minimizeBtn").click();
+    await expect(page.locator("#progressWrap")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("#progressMeta")).toContainText("ETA", { timeout: 15000 });
+
+    const interim = await page.evaluate(() => ({
+        status: document.querySelector("#status")?.textContent || "",
+        progressMeta: document.querySelector("#progressMeta")?.textContent || "",
+    }));
+
+    if (!interim.status.startsWith("Done.")) {
+        expect(interim.status).toContain("Video processing in progress");
+        expect(interim.status).not.toContain("attempt");
+        expect(interim.status).not.toMatch(/\d+%/);
+    }
+    expect(interim.progressMeta).toContain("ETA");
+    expect(interim.progressMeta).toContain("Elapsed");
+
+    await expect(page.locator("#status")).toContainText("Done.", { timeout: 70000 });
 });
 
 for (const fixture of VIDEO_FIXTURE_CASES) {

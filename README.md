@@ -59,20 +59,32 @@ The app also records stage timings (`load`, `input`, `metadata`, `encode`, `outp
 
 ## Advanced (Optional) Controls
 
-The UI now includes a collapsible Advanced section for video runs. All controls default to `Auto` and preserve current behavior until the user opts in.
+The UI includes a collapsible Advanced section for video runs. All controls default to `Auto` and preserve current behavior until the user opts in.
 
 Available knobs:
 
-- Processing speed: `Auto`, `Balanced`, `Better quality (slower)`
-- Max resolution: `Auto`, explicit caps (`1080p` ... `240p`), or `No cap`
-- Max frame rate: `Auto`, `60`, `30`, `24`
-- Audio quality: `Auto`, AAC bitrate presets, or `Keep original when possible`
-- CPU usage: `Auto`, `1`, `2`, or `4` threads (MT runtime only; ST remains single-thread)
+- Processing speed:
+  - `Auto (recommended)` = current default fast preset path
+  - `Balanced` = `veryfast`
+  - `Higher quality` = `faster` (slower, better quality per byte)
+- Max resolution:
+  - `Auto` = adaptive cap based on bitrate pressure (`none` to `480p`)
+  - Manual = fixed cap (`1080p` ... `240p`) or `No cap`
+- Max frame rate:
+  - `Auto` = adaptive (`keep source` or cap to `24/30`)
+  - Manual = fixed cap (`60`, `30`, `24`)
+- Audio quality:
+  - `Auto` = adaptive AAC (`56-112k`) with copy when safe
+  - Manual = fixed AAC presets or `Keep original when possible`
+- CPU usage:
+  - `Auto` = adaptive (`ST=1`, `MT=2-4` based on hardware/source)
+  - Manual = fixed `1`, `2`, or `4` threads (ST remains single-thread at runtime)
 
 UX helpers:
 
 - `Reset to Auto` button restores all advanced controls in one click.
 - Inline `?` glossary tooltips explain each knob in plain language.
+- During video runs, detailed live progress (percent/ETA/elapsed) is shown in the progress panel; the status banner remains high-level to avoid duplicate messaging.
 
 ## Local Debug / Stall Investigation
 

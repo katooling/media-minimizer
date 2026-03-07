@@ -122,6 +122,8 @@ const DROP_TITLE_READY = "File selected";
 const DROP_NOTE_READY = "Click Minimize to start processing";
 const DROP_TITLE_PROCESSING = "Minimizing in progress";
 const DROP_NOTE_PROCESSING = "Please wait until the current run finishes";
+const STATUS_VIDEO_PROCESSING = "Video processing in progress. Live details are shown in the progress panel.";
+const STATUS_IMAGE_PROCESSING = "Image processing in progress. Live details are shown in the progress panel.";
 
 init();
 
@@ -441,7 +443,8 @@ async function onMinimizeClick() {
     state.lastEncodePlan = null;
     clearOutput();
     setPendingResultState(inputType, state.inputFile);
-    startProgressTracker(inputType === "video" ? "Minimizing video" : "Minimizing image");
+    startProgressTracker(inputType === "video" ? "Preparing video pipeline" : "Minimizing image");
+    setStatus(inputType === "video" ? STATUS_VIDEO_PROCESSING : STATUS_IMAGE_PROCESSING, "info");
     beginRunTrace(inputType);
     recordAppEvent("minimize-start", {
         kind: inputType,
@@ -613,8 +616,16 @@ function renderProgressState() {
     const elapsedSeconds = Math.max(0, (now - state.progressStartedAtMs) / 1000);
     const elapsedText = `Elapsed ${formatElapsed(elapsedSeconds)}`;
     let percentText = "Estimating...";
+    let etaText = "ETA pending";
     if (Number.isFinite(state.progressPercent)) {
-        percentText = `${Math.round(state.progressPercent)}%`;
+        const roundedPercent = Math.round(state.progressPercent);
+        percentText = `${roundedPercent}%`;
+        const etaSeconds = estimateRemainingSecondsFromProgress(state.progressPercent, elapsedSeconds);
+        if (Number.isFinite(etaSeconds)) {
+            etaText = `ETA ~${formatDuration(etaSeconds)}`;
+        } else if (roundedPercent >= 100) {
+            etaText = "ETA 0:00";
+        }
     } else if (
         state.processing &&
         state.currentStage === "encode" &&
@@ -623,14 +634,29 @@ function renderProgressState() {
         (state.lastProgressUpdateAt === 0 || now - state.lastProgressUpdateAt > ENCODE_ACTIVITY_HINT_MS)
     ) {
         percentText = "Still processing";
+        etaText = "ETA updating";
     }
-    elements.progressMeta.textContent = `${state.progressLabel} • ${percentText} • ${elapsedText}`;
+    elements.progressMeta.textContent = `${state.progressLabel} • ${percentText} • ${etaText} • ${elapsedText}`;
 
     if (Number.isFinite(state.progressPercent)) {
         elements.progressBar.value = state.progressPercent;
     } else {
         elements.progressBar.removeAttribute("value");
     }
+}
+
+function estimateRemainingSecondsFromProgress(percent, elapsedSeconds) {
+    if (!Number.isFinite(percent) || !Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
+        return null;
+    }
+    if (percent <= 1 || percent >= 100) {
+        return null;
+    }
+    const remainingSeconds = (elapsedSeconds * (100 - percent)) / percent;
+    if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) {
+        return null;
+    }
+    return remainingSeconds;
 }
 
 function resetProgressState() {
@@ -813,8 +839,8 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
         });
 
         const etaBand = estimateVideoEtaBand(durationSeconds, state.ffmpegMode);
-        setProgressUpdate(`Minimizing video (attempt 1) • ${etaBand}`, null);
-        setStatus(`Minimizing video (attempt 1)... ${etaBand}. Browser FFmpeg is slower than native.`, "info");
+        setProgressUpdate(`Encoding video (attempt 1) • ${etaBand}`, null);
+        setStatus(STATUS_VIDEO_PROCESSING, "info");
 
         if (shouldTryRemuxOnly(file, targetBytes)) {
             setCurrentStage("remux");
@@ -944,8 +970,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         }
         state.lastProgressUpdateAt = now;
         const percent = Math.min(100, Math.max(0, Math.round(progress * 100)));
-        setProgressUpdate(`Minimizing video (${attemptLabel})`, percent);
-        setStatus(`Minimizing video (${attemptLabel})... ${percent}% (approx.)`, "info");
+        setProgressUpdate(`Encoding video (${attemptLabel})`, percent);
         if (now - lastProgressTraceAt >= 1000 || percent >= 100) {
             lastProgressTraceAt = now;
             traceEvent("encode-progress", {
@@ -1013,8 +1038,8 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
                 reason: classifiedError.code,
             });
             appendMetricNote(runMetrics, "filterless-retry");
-            setProgressUpdate(`Minimizing video (${attemptLabel}, filterless retry)`, null);
-            setStatus(`Minimizing video (${attemptLabel})... retrying without filters.`, "info");
+            setProgressUpdate(`Compatibility retry (${attemptLabel}, no filters)`, null);
+            setStatus("Video compatibility retry in progress (without filters).", "info");
             await safelyDeleteFile(ffmpeg, outputPath);
             activeProfile = {
                 ...activeProfile,
