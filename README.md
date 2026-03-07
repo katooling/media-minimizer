@@ -66,12 +66,17 @@ Debug helpers:
 - `window.__mediaMinimizerDebug.getLastRunMetrics()`
 - `window.__mediaMinimizerDebug.getLastTrace()`
 - `window.__mediaMinimizerDebug.getLastFfmpegLogs()`
+- `window.__mediaMinimizerDebug.getAppEvents()`
+- `window.__mediaMinimizerDebug.getLastRunSummary()`
 - `window.__mediaMinimizerDebug.getLiveState()`
 
 Stall handling defaults:
 
 - Encode watchdog: soft warning after `25s` without progress/log activity.
-- Hard stall cutoff is adaptive from clip duration + runtime mode (clamped to `120s`-`420s`).
+- Hard stall cutoff is adaptive from clip duration + runtime mode:
+  - ST clamp: `120s`-`420s`
+  - MT clamp: `35s`-`180s`
+- MT adds a first-progress grace window before stall fallback (`55s`-`150s` based on duration).
 - Encode timeout: `12 min`.
 - MT stall/failure retries once in ST mode, then fails explicitly.
 
@@ -110,14 +115,19 @@ cd /Users/mkamar/Non_Work/Projects/media-minimizer
 npm install
 npm run test:e2e
 npm run test:e2e:real-video
+npm run test:e2e:real-video:mt
 npm run bench:video
 ```
 
 `test:e2e:real-video` uses:
 
 - `REAL_VIDEO_PATH` (optional absolute path)
-- default: `~/Downloads/Screen Recording 2025-12-11 at 3.04.37 PM.mov`
+- default: `tests/e2e/fixtures/local-debug-video.mov`
+- if local debug video is missing, helper script attempts to copy from:
+  - `~/Desktop/Screen Recording 2025-12-11 at 3.04.37 PM.mov`
+  - `~/Downloads/Screen Recording 2025-12-11 at 3.04.37 PM.mov`
 - starts a local static server automatically for the smoke run
+- `test:e2e:real-video:mt` additionally asserts that MT was attempted
 
 ## Agent E2E Workflow
 

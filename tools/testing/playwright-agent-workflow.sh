@@ -32,8 +32,11 @@ if [[ "${SKIP_REAL_VIDEO:-0}" == "1" ]]; then
     exit 0
 fi
 
-DEFAULT_REAL_VIDEO="$HOME/Downloads/Screen Recording 2025-12-11 at 3.04.37 PM.mov"
-REAL_VIDEO_CANDIDATE="${REAL_VIDEO_PATH:-$DEFAULT_REAL_VIDEO}"
+if [[ -z "${REAL_VIDEO_PATH:-}" ]]; then
+    REAL_VIDEO_CANDIDATE="$(bash ./tools/testing/prepare-debug-video.sh)"
+else
+    REAL_VIDEO_CANDIDATE="$REAL_VIDEO_PATH"
+fi
 
 if [[ -f "$REAL_VIDEO_CANDIDATE" ]]; then
     echo "[agent-e2e] Running real-video smoke with: $REAL_VIDEO_CANDIDATE"

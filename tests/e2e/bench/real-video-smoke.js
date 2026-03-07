@@ -3,7 +3,11 @@ const os = require("os");
 const path = require("path");
 const { chromium } = require("playwright");
 
-const DEFAULT_REAL_VIDEO = "~/Downloads/Screen Recording 2025-12-11 at 3.04.37\u202fPM.mov";
+const DEFAULT_REAL_VIDEO_CANDIDATES = [
+    path.resolve(__dirname, "..", "fixtures", "local-debug-video.mov"),
+    "~/Downloads/Screen Recording 2025-12-11 at 3.04.37\u202fPM.mov",
+    "~/Desktop/Screen Recording 2025-12-11 at 3.04.37\u202fPM.mov",
+];
 
 function expandHome(filePath) {
     if (!filePath) {
@@ -17,8 +21,9 @@ function expandHome(filePath) {
 
 async function run() {
     const baseURL = process.env.BASE_URL || "http://127.0.0.1:4173";
-    const configuredPath = process.env.REAL_VIDEO_PATH || DEFAULT_REAL_VIDEO;
-    const realVideoPath = expandHome(configuredPath);
+    const configuredPath = process.env.REAL_VIDEO_PATH || "";
+    const requireMtAttempt = process.env.REAL_VIDEO_REQUIRE_MT_ATTEMPT === "1";
+    const realVideoPath = resolveRealVideoPath(configuredPath);
 
     if (!fs.existsSync(realVideoPath)) {
         console.log(`[real-video-smoke] Skipped. File not found: ${realVideoPath}`);
@@ -70,6 +75,7 @@ async function run() {
             downloadEnabled,
             runtime,
             metrics,
+            summary: debug?.getLastRunSummary?.() || null,
             traceTail: trace.slice(-20),
             ffmpegLogTail: logs.slice(-30),
         };
@@ -82,6 +88,26 @@ async function run() {
     if (!/^Done\./i.test(report.finalStatus) || !report.downloadEnabled) {
         process.exit(1);
     }
+    if (requireMtAttempt) {
+        const attemptedModes = Array.isArray(report.metrics?.attemptedModes) ? report.metrics.attemptedModes : [];
+        if (!attemptedModes.includes("mt-fast")) {
+            console.error("[real-video-smoke] MT attempt was required but did not occur.");
+            process.exit(1);
+        }
+    }
+}
+
+function resolveRealVideoPath(configuredPath) {
+    if (configuredPath) {
+        return expandHome(configuredPath);
+    }
+    for (const candidate of DEFAULT_REAL_VIDEO_CANDIDATES) {
+        const resolved = expandHome(candidate);
+        if (fs.existsSync(resolved)) {
+            return resolved;
+        }
+    }
+    return expandHome(DEFAULT_REAL_VIDEO_CANDIDATES[0]);
 }
 
 run().catch((error) => {

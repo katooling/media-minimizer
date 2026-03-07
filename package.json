@@ -11,6 +11,7 @@
     "test:e2e:agent": "bash ./tools/testing/playwright-agent-workflow.sh",
     "test:e2e:agent:last-failed": "bash ./tools/testing/playwright-agent-workflow.sh --last-failed",
     "test:e2e:real-video": "bash ./tools/testing/run-real-video-smoke.sh",
+    "test:e2e:real-video:mt": "REAL_VIDEO_REQUIRE_MT_ATTEMPT=1 bash ./tools/testing/run-real-video-smoke.sh",
     "bench:video": "node tests/e2e/bench/video-benchmark.js",
     "core:build:st-lite": "./tools/ffmpeg-core/build-core.sh st-lite",
     "core:build:st-large": "./tools/ffmpeg-core/build-core.sh st-large",

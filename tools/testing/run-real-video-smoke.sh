@@ -5,8 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:4173}"
-DEFAULT_REAL_VIDEO="$HOME/Downloads/Screen Recording 2025-12-11 at 3.04.37 PM.mov"
-REAL_VIDEO_CANDIDATE="${REAL_VIDEO_PATH:-$DEFAULT_REAL_VIDEO}"
+DEFAULT_REAL_VIDEO="$ROOT_DIR/tests/e2e/fixtures/local-debug-video.mov"
+if [[ -z "${REAL_VIDEO_PATH:-}" ]]; then
+    REAL_VIDEO_CANDIDATE="$(bash ./tools/testing/prepare-debug-video.sh)"
+else
+    REAL_VIDEO_CANDIDATE="$REAL_VIDEO_PATH"
+fi
 
 if [[ ! -f "$REAL_VIDEO_CANDIDATE" ]]; then
     echo "[real-video-smoke] Skipped. File not found: $REAL_VIDEO_CANDIDATE"

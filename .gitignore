@@ -3,3 +3,4 @@ test-results/
 playwright-report/
 tools/ffmpeg-core/.tmp/
 tools/ffmpeg-core/out/
+tests/e2e/fixtures/local-debug-video.mov
