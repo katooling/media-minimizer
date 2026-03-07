@@ -1158,8 +1158,6 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         profile.preset,
         "-threads",
         `${Math.max(1, profile.encodeThreads || ST_ENCODE_THREADS)}`,
-        "-tune",
-        "zerolatency",
         "-b:v",
         `${profile.videoKbps}k`,
         "-maxrate",
@@ -1169,6 +1167,9 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         "-pix_fmt",
         "yuv420p",
     ];
+    if (profile.runtimeMode !== "mt-fast") {
+        args.push("-tune", "zerolatency");
+    }
 
     if (!profile.forceNoFilters) {
         const filters = [];
