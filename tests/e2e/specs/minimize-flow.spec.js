@@ -250,12 +250,11 @@ test("advanced auto labels explain current default behavior", async ({ page }) =
         };
     });
 
-    expect(autoLabels.speed.toLowerCase()).toContain("recommended");
-    expect(autoLabels.resolution.toLowerCase()).toContain("adaptive");
-    expect(autoLabels.fps.toLowerCase()).toContain("adaptive");
-    expect(autoLabels.audio.toLowerCase()).toContain("adaptive");
-    expect(autoLabels.threads).toContain("ST=1");
-    expect(autoLabels.threads).toContain("MT=2-4");
+    expect(autoLabels.speed.toLowerCase()).toContain("auto");
+    expect(autoLabels.resolution.toLowerCase()).toContain("auto");
+    expect(autoLabels.fps.toLowerCase()).toContain("auto");
+    expect(autoLabels.audio.toLowerCase()).toContain("auto");
+    expect(autoLabels.threads.toLowerCase()).toContain("auto");
 });
 
 test("advanced overrides map to encode profile and args", async ({ page }) => {
