@@ -161,3 +161,23 @@ npm run core:sync:mt-fast
 ```
 
 Checksums are tracked in `vendor/ffmpeg/CHECKSUMS.sha256`.
+
+## Custom FFmpeg Core Modifications
+
+This project uses custom `ffmpeg.wasm` core profiles instead of pulling remote defaults at runtime.
+
+Implemented customizations:
+
+- Local vendored runtime assets under `vendor/ffmpeg` for privacy and deterministic versions.
+- Three runtime profiles:
+  - `st-lite` (smaller single-thread core)
+  - `st-large` (single-thread core for larger files)
+  - `mt-fast` (multi-thread core when isolation is available)
+- Pruned codec/container scope for this app's use case (video minimize + image handling paths).
+- Explicit filter set enabled for real-world MOV compatibility:
+  - `null,setpts,scale,fps,format,aresample,anull`
+- Asset URL cache-busting/version pinning from app code to avoid mixed old/new core artifacts after deploy.
+- Runtime fallback policy in app:
+  - MT failure/stall -> auto retry in ST once.
+
+When changing any profile flags, rebuild and sync all cores so `ffmpeg-core.js` and `ffmpeg-core.wasm` remain matched per profile.
