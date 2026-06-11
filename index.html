@@ -4,7 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Media Minimizer</title>
-    <link rel="icon" href="data:,">
+    <meta name="theme-color" content="#1f6f5b">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Media Minimizer">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="192x192" href="assets/icons/icon-192.png">
+    <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
     <script>
         try {
             const theme = localStorage.getItem("mm-theme");
@@ -31,6 +37,7 @@
             <div class="title-row">
                 <h1>Media Minimizer</h1>
                 <div class="title-actions">
+                    <button id="installBtn" class="install-button" type="button" aria-label="Install app" hidden>Install</button>
                     <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">🌙</button>
                     <span class="badge-wrap">
                         <span id="engineBadge" class="engine-badge loading" aria-live="polite" tabindex="0">Engine: Loading</span>
@@ -38,7 +45,8 @@
                     </span>
                 </div>
             </div>
-            <p class="subtle">Shrink videos and images in your browser. Files never leave your device.</p>
+            <p class="subtle">Shrink videos and images in your browser. Your files are not uploaded here.</p>
+            <p class="privacy-note">Your media stays on this device. Anonymous analytics may report general app activity in production. It never sends filenames, file contents, folders, or conversion logs. Once the app has loaded, minimization can keep working offline.</p>
         </header>
 
         <section class="panel" aria-label="Media minimizer workflow">

@@ -2,6 +2,7 @@ import { FFmpeg, FFFSType } from "./vendor/ffmpeg/ffmpeg/index.js";
 import { fetchFile } from "./vendor/ffmpeg/util/index.js";
 
 const elements = {
+    installBtn: document.getElementById("installBtn"),
     engineBadge: document.getElementById("engineBadge"),
     badgeTip: document.getElementById("badgeTip"),
     themeToggle: document.getElementById("themeToggle"),
@@ -74,6 +75,11 @@ const analyticsState = {
     initialized: false,
     events: [],
     lastError: null,
+};
+
+const pwaState = {
+    installPromptEvent: null,
+    installed: false,
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -175,9 +181,11 @@ init();
 
 function init() {
     initTheme();
+    initPwaInstall();
     initAnalytics();
 
     elements.fileInput.addEventListener("change", onFileInputChange);
+    elements.installBtn?.addEventListener("click", onInstallClick);
     elements.dropZone.addEventListener("dragover", onDragOver);
     elements.dropZone.addEventListener("dragleave", onDragLeave);
     elements.dropZone.addEventListener("drop", onDrop);
@@ -244,6 +252,77 @@ function init() {
     resetProgressState();
     setStatus("Preparing local engine... Drop a video or image to start.", "info");
     warmupFfmpeg();
+}
+
+function initPwaInstall() {
+    if (typeof window === "undefined") {
+        return;
+    }
+
+    window.__mediaMinimizerPwaDebug = {
+        getState: () => ({
+            serviceWorkerControlled: Boolean(navigator.serviceWorker?.controller),
+            standalone: isStandaloneDisplay(),
+            installPromptAvailable: Boolean(pwaState.installPromptEvent),
+            installed: pwaState.installed,
+        }),
+    };
+
+    window.addEventListener("beforeinstallprompt", (event) => {
+        event.preventDefault();
+        pwaState.installPromptEvent = event;
+        updateInstallButton();
+    });
+
+    window.addEventListener("appinstalled", () => {
+        pwaState.installed = true;
+        pwaState.installPromptEvent = null;
+        updateInstallButton();
+    });
+
+    const displayModeQuery = typeof window.matchMedia === "function"
+        ? window.matchMedia("(display-mode: standalone)")
+        : null;
+    displayModeQuery?.addEventListener?.("change", updateInstallButton);
+    updateInstallButton();
+}
+
+function isStandaloneDisplay() {
+    const standaloneMode = typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(display-mode: standalone)").matches;
+    const iosStandalone = Boolean(globalThis.navigator?.standalone);
+    return standaloneMode || iosStandalone;
+}
+
+function updateInstallButton() {
+    if (!elements.installBtn) {
+        return;
+    }
+    elements.installBtn.hidden = !pwaState.installPromptEvent || isStandaloneDisplay() || pwaState.installed;
+}
+
+async function onInstallClick() {
+    if (!pwaState.installPromptEvent) {
+        updateInstallButton();
+        return;
+    }
+
+    const promptEvent = pwaState.installPromptEvent;
+    pwaState.installPromptEvent = null;
+    updateInstallButton();
+
+    try {
+        await promptEvent.prompt();
+        const choice = await promptEvent.userChoice;
+        if (choice?.outcome !== "accepted") {
+            pwaState.installPromptEvent = promptEvent;
+        }
+    } catch (error) {
+        pwaState.installPromptEvent = promptEvent;
+    }
+
+    updateInstallButton();
 }
 
 function initTheme() {

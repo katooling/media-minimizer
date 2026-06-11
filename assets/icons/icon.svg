@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+    <title id="title">Media Minimizer icon</title>
+    <desc id="desc">A media file with a play marker and compression arrows.</desc>
+    <rect width="512" height="512" rx="96" fill="#f6f4ec"/>
+    <path d="M164 86h138l76 76v264H164z" fill="#ffffff" stroke="#1f6f5b" stroke-width="24" stroke-linejoin="round"/>
+    <path d="M302 86v78h76" fill="#d7ede5" stroke="#1f6f5b" stroke-width="24" stroke-linejoin="round"/>
+    <path d="M230 222v104l86-52z" fill="#255f85"/>
+    <path d="M116 206h88m-88 0 34-34m-34 34 34 34" fill="none" stroke="#d1495b" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M396 306h-88m88 0-34-34m34 34-34 34" fill="none" stroke="#d1495b" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M198 378h146" fill="none" stroke="#1f6f5b" stroke-width="22" stroke-linecap="round"/>
+</svg>

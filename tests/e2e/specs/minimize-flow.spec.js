@@ -193,6 +193,123 @@ test("initial load reaches engine ready and uses only local app assets", async (
     expect(remoteRequests).toEqual([]);
 });
 
+test("web app manifest exposes installable PWA metadata", async ({ page }) => {
+    const manifestResponse = await page.request.get("/manifest.webmanifest");
+    expect(manifestResponse.ok()).toBe(true);
+    const manifest = await manifestResponse.json();
+
+    expect(manifest).toMatchObject({
+        name: "Media Minimizer",
+        short_name: "Minimizer",
+        start_url: "./",
+        scope: "./",
+        display: "standalone",
+    });
+    expect(manifest.icons).toEqual(expect.arrayContaining([
+        expect.objectContaining({ src: "assets/icons/icon-192.png", sizes: "192x192", type: "image/png" }),
+        expect.objectContaining({ src: "assets/icons/icon-512.png", sizes: "512x512", type: "image/png" }),
+        expect.objectContaining({ src: "assets/icons/icon-maskable-512.png", sizes: "512x512", purpose: "maskable" }),
+    ]));
+
+    for (const icon of manifest.icons) {
+        const iconResponse = await page.request.get(`/${icon.src}`);
+        expect(iconResponse.ok(), `${icon.src} should load`).toBe(true);
+    }
+
+    await page.goto("/");
+    await expect(page.locator("link[rel='manifest']")).toHaveAttribute("href", "manifest.webmanifest");
+});
+
+test("service worker caches app shell and active ffmpeg runtime assets", async ({ page }) => {
+    await openApp(page);
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller), null, { timeout: 15000 });
+    const requiredCachedUrls = [
+        "/index.html",
+        "/styles.css",
+        "/app.js",
+        "/manifest.webmanifest",
+        "/coi-serviceworker.js",
+        "/assets/icons/icon-192.png",
+        "/vendor/ffmpeg/ffmpeg/index.js",
+        "/vendor/ffmpeg/ffmpeg/worker.js",
+        "/vendor/ffmpeg/util/index.js",
+        "/vendor/ffmpeg/core-mt-fast/ffmpeg-core.wasm?v=20260307-1",
+        "/vendor/ffmpeg/core-st-large/ffmpeg-core.wasm?v=20260307-1",
+        "/vendor/ffmpeg/core-st-lite/ffmpeg-core.wasm?v=20260307-1",
+    ];
+    await page.waitForFunction(async (expectedUrls) => {
+        const cacheNames = await caches.keys();
+        const cacheName = cacheNames.find((name) => name.startsWith("media-minimizer-")) || "";
+        if (!cacheName) {
+            return false;
+        }
+        const cache = await caches.open(cacheName);
+        const requests = await cache.keys();
+        const cachedUrls = requests.map((request) => {
+            const url = new URL(request.url);
+            return `${url.pathname}${url.search}`;
+        });
+        return expectedUrls.every((url) => cachedUrls.includes(url));
+    }, requiredCachedUrls, { timeout: 30000 });
+
+    const cacheState = await page.evaluate(async () => {
+        const cacheNames = await caches.keys();
+        const cacheName = cacheNames.find((name) => name.startsWith("media-minimizer-")) || "";
+        const cache = cacheName ? await caches.open(cacheName) : null;
+        const requests = cache ? await cache.keys() : [];
+        return {
+            cacheName,
+            urls: requests.map((request) => {
+                const url = new URL(request.url);
+                return `${url.pathname}${url.search}`;
+            }),
+        };
+    });
+
+    expect(cacheState.cacheName).toMatch(/^media-minimizer-/);
+    expect(cacheState.urls).toEqual(expect.arrayContaining(requiredCachedUrls));
+    expect(cacheState.urls.some((url) => url.includes("/vendor/ffmpeg/core/ffmpeg-core.wasm"))).toBe(false);
+    expect(cacheState.urls.some((url) => url.includes("/vendor/ffmpeg/core-mt/ffmpeg-core.wasm"))).toBe(false);
+});
+
+test("fresh offline launch loads cached app and minimizes an image", async ({ page }) => {
+    await openApp(page);
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller), null, { timeout: 15000 });
+
+    await page.context().setOffline(true);
+    try {
+        await page.goto("/");
+        await waitForEngineReady(page);
+        const pwa = await page.evaluate(() => window.__mediaMinimizerPwaDebug?.getState?.() || null);
+        expect(pwa?.serviceWorkerControlled).toBe(true);
+
+        await uploadFile(page, fixturePath("sample.png"), {
+            name: "fresh-offline-image.png",
+            mimeType: "image/png",
+        });
+        await page.locator("#minimizeBtn").click();
+        await expect(page.locator("#status")).toContainText("Done.", { timeout: 15000 });
+        await expect(page.locator("#downloadBtn")).toBeEnabled();
+    } finally {
+        await page.context().setOffline(false);
+    }
+});
+
+test("offline reload can still load the single-thread ffmpeg runtime", async ({ page }) => {
+    await openApp(page, "/?debug=1&runtimeMock=st-only");
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller), null, { timeout: 15000 });
+
+    await page.context().setOffline(true);
+    try {
+        await page.reload();
+        await waitForEngineReady(page);
+        const runtime = await page.evaluate(() => window.__mediaMinimizerDebug?.getRuntimeState?.() || null);
+        expect(runtime?.activeMode).toMatch(/^st-/);
+    } finally {
+        await page.context().setOffline(false);
+    }
+});
+
 test("analytics is disabled by default on local app loads", async ({ page }) => {
     const remoteRequests = [];
     page.on("request", (request) => {

@@ -5,6 +5,13 @@ const THEME_KEY = "mm-theme";
 async function openThemePage(page, colorScheme) {
     await page.emulateMedia({ colorScheme });
     await page.goto("/");
+    await page.waitForFunction(() => Boolean(window.__mediaMinimizerDebug?.getThemeState));
+    await page.waitForFunction(() => {
+        if (!navigator.serviceWorker) {
+            return true;
+        }
+        return Boolean(navigator.serviceWorker.controller);
+    }, null, { timeout: 15000 });
     await page.evaluate((storageKey) => localStorage.removeItem(storageKey), THEME_KEY);
     await page.reload();
     await page.waitForFunction(() => Boolean(window.__mediaMinimizerDebug?.getThemeState));

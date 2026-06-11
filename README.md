@@ -20,8 +20,30 @@ with a minimal UI:
 - Image input (`image/*`) -> outputs optimized image using browser canvas.
 - Unsupported file types are rejected inline.
 - No backend and no upload: processing stays in-browser, and selected media files are not sent to the app host or analytics provider.
-- After the static app and encoder assets have loaded, image/video minimization can continue if analytics is blocked or the network connection drops.
+- After the static app and encoder assets have loaded once, the app can be installed and launched offline from supported browsers.
 - FFmpeg assets are vendored locally under `vendor/ffmpeg`.
+
+## Offline Install
+
+Default path:
+
+1. Open the hosted app once while online.
+2. Use the browser install action when it appears.
+3. Launch Media Minimizer from the installed app shortcut when offline.
+
+Offline support is implemented as a Progressive Web App:
+
+- `manifest.webmanifest` provides the app name, icons, scope, start URL, theme color, and standalone display mode.
+- `coi-serviceworker.js` precaches the static app shell, active ffmpeg runtime assets, manifest, and icons.
+- The same service worker still injects COOP/COEP headers when the host does not provide them, preserving the `MT-sw` runtime path where browser isolation succeeds.
+- Analytics requests are never cached and never block minimization.
+- User-selected media and generated output files are never cached by the app.
+
+Limits:
+
+- First use requires a network connection so the browser can install the service worker and fill the offline cache.
+- Browser storage can be cleared or evicted, so this is not the same persistence guarantee as a native desktop bundle.
+- Chromium desktop and mobile browsers provide the strongest install experience. Other browsers may support offline loading without a standalone installed window.
 
 ## Runtime Modes
 
