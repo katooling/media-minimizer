@@ -68,6 +68,14 @@ const themeState = {
     effectiveTheme: "light",
 };
 
+const analyticsState = {
+    mode: "disabled",
+    enabled: false,
+    initialized: false,
+    events: [],
+    lastError: null,
+};
+
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"]);
 const FALLBACK_TARGET_MARGIN = 1.1;
@@ -136,6 +144,22 @@ const DROP_TITLE_PROCESSING = "Minimizing in progress";
 const DROP_NOTE_PROCESSING = "Please wait until the current run finishes";
 const STATUS_VIDEO_PROCESSING = "Video processing in progress. Live details are shown in the progress panel.";
 const STATUS_IMAGE_PROCESSING = "Image processing in progress. Live details are shown in the progress panel.";
+const ANALYTICS_DEFAULTS = "2026-01-30";
+const ANALYTICS_EVENT_VERSION = 1;
+const ANALYTICS_DEBUG_EVENT_LIMIT = 100;
+const ANALYTICS_LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
+const ANALYTICS_FORBIDDEN_KEYS = new Set([
+    "name",
+    "file",
+    "filename",
+    "path",
+    "message",
+    "failuremessage",
+    "failuredetails",
+    "terminalline",
+    "logs",
+    "ffmpeglogs",
+]);
 const THEME_STORAGE_KEY = "mm-theme";
 const THEME_DARK_QUERY = "(prefers-color-scheme: dark)";
 const ENGINE_TIP = {
@@ -151,6 +175,7 @@ init();
 
 function init() {
     initTheme();
+    initAnalytics();
 
     elements.fileInput.addEventListener("change", onFileInputChange);
     elements.dropZone.addEventListener("dragover", onDragOver);
@@ -192,6 +217,7 @@ function init() {
             getLiveState: () => getLiveDebugState(),
             getAdvancedVideoSettings: () => ({ ...getAdvancedVideoSettings() }),
             getThemeState: () => getThemeDebugState(),
+            getAnalyticsState: () => getAnalyticsDebugState(),
             getLastEncodePlan: () => (state.lastEncodePlan ? {
                 ...state.lastEncodePlan,
                 profile: state.lastEncodePlan.profile ? { ...state.lastEncodePlan.profile } : null,
@@ -297,6 +323,477 @@ function getThemeDebugState() {
         effectiveTheme: themeState.effectiveTheme,
         storedTheme: themeState.storedTheme,
         systemTheme: themeState.mediaQuery?.matches ? "dark" : "light",
+    };
+}
+
+function initAnalytics() {
+    const config = getAnalyticsConfig();
+    const mode = resolveAnalyticsMode(config);
+    analyticsState.mode = mode;
+    analyticsState.enabled = mode === "live" || mode === "stub";
+    analyticsState.initialized = false;
+    analyticsState.events = [];
+    analyticsState.lastError = null;
+
+    if (typeof window !== "undefined") {
+        window.__mediaMinimizerAnalyticsDebug = {
+            getState: () => getAnalyticsDebugState(),
+            getEvents: () => analyticsState.events.map((entry) => ({
+                event: entry.event,
+                properties: { ...entry.properties },
+            })),
+        };
+    }
+
+    if (mode !== "live") {
+        analyticsState.initialized = mode === "stub";
+        return;
+    }
+
+    try {
+        installPostHogSnippet(config.assetHost);
+        globalThis.posthog.init(config.projectToken, {
+            api_host: config.apiHost,
+            defaults: ANALYTICS_DEFAULTS,
+            autocapture: false,
+            capture_pageview: true,
+            capture_pageleave: false,
+            capture_dead_clicks: false,
+            disable_session_recording: true,
+            disable_surveys: true,
+            advanced_disable_flags: true,
+            person_profiles: "identified_only",
+            persistence: "memory",
+            property_denylist: [
+                "name",
+                "file",
+                "filename",
+                "path",
+                "message",
+                "failureMessage",
+                "failureDetails",
+                "terminalLine",
+                "logs",
+                "ffmpegLogs",
+            ],
+            before_send: sanitizePostHogOutboundEvent,
+            loaded: () => {
+                analyticsState.initialized = true;
+            },
+        });
+    } catch (error) {
+        analyticsState.enabled = false;
+        analyticsState.mode = "disabled";
+        analyticsState.lastError = error instanceof Error ? error.message : String(error || "Analytics failed to initialize.");
+    }
+}
+
+function getAnalyticsConfig() {
+    const raw = typeof globalThis !== "undefined" ? globalThis.MEDIA_MINIMIZER_ANALYTICS || {} : {};
+    return {
+        projectToken: typeof raw.projectToken === "string" ? raw.projectToken.trim() : "",
+        apiHost: typeof raw.apiHost === "string" && raw.apiHost.trim() ? raw.apiHost.trim() : "https://us.i.posthog.com",
+        assetHost: typeof raw.assetHost === "string" && raw.assetHost.trim() ? raw.assetHost.trim() : "https://us-assets.i.posthog.com",
+        allowedHostnames: Array.isArray(raw.allowedHostnames)
+            ? raw.allowedHostnames.map((host) => String(host || "").trim().toLowerCase()).filter(Boolean)
+            : [],
+    };
+}
+
+function resolveAnalyticsMode(config) {
+    const override = debugParams.get("analytics");
+    if (override === "off") {
+        return "disabled";
+    }
+    if (override === "stub") {
+        return "stub";
+    }
+    if (!config.projectToken) {
+        return "disabled";
+    }
+    if (override === "live") {
+        return "live";
+    }
+    const hostname = getAnalyticsHostname();
+    if (!hostname || ANALYTICS_LOCAL_HOSTNAMES.has(hostname)) {
+        return "disabled";
+    }
+    return config.allowedHostnames.includes(hostname) ? "live" : "disabled";
+}
+
+function getAnalyticsHostname() {
+    try {
+        return String(globalThis.location?.hostname || "").toLowerCase();
+    } catch (error) {
+        return "";
+    }
+}
+
+function installPostHogSnippet(assetHost) {
+    if (globalThis.posthog?.__SV) {
+        return;
+    }
+    const documentRef = globalThis.document;
+    if (!documentRef) {
+        throw new Error("PostHog requires a browser document.");
+    }
+
+    // Official PostHog queue snippet, kept local so analytics can stay disabled on localhost.
+    (function loadPostHog(doc, posthog) {
+        let script;
+        let firstScript;
+        if (posthog.__SV) {
+            return;
+        }
+        globalThis.posthog = posthog;
+        posthog._i = [];
+        posthog.init = function initQueuedPostHog(token, options, name) {
+            function addQueueMethod(target, methodName) {
+                const parts = methodName.split(".");
+                if (parts.length === 2) {
+                    target = target[parts[0]];
+                    methodName = parts[1];
+                }
+                target[methodName] = function queuePostHogCall() {
+                    target.push([methodName].concat(Array.prototype.slice.call(arguments, 0)));
+                };
+            }
+            const target = typeof name !== "undefined" ? posthog[name] = [] : posthog;
+            if (typeof name === "undefined") {
+                name = "posthog";
+            }
+            target.people = target.people || [];
+            target.toString = function toString(includePeople) {
+                let label = "posthog";
+                if (name !== "posthog") {
+                    label += `.${name}`;
+                }
+                if (!includePeople) {
+                    label += " (stub)";
+                }
+                return label;
+            };
+            target.people.toString = function peopleToString() {
+                return `${target.toString(1)}.people (stub)`;
+            };
+            const methods = "capture identify alias people.set people.set_once reset register register_once unregister opt_out_capturing opt_in_capturing has_opted_out_capturing has_opted_in_capturing clear_opt_in_out_capturing".split(" ");
+            for (let index = 0; index < methods.length; index += 1) {
+                addQueueMethod(target, methods[index]);
+            }
+            posthog._i.push([token, options, name]);
+        };
+        posthog.__SV = 1;
+        script = doc.createElement("script");
+        script.type = "text/javascript";
+        script.async = true;
+        script.crossOrigin = "anonymous";
+        script.src = `${assetHost.replace(/\/$/, "")}/static/array.js`;
+        firstScript = doc.getElementsByTagName("script")[0];
+        firstScript.parentNode.insertBefore(script, firstScript);
+    }(documentRef, globalThis.posthog || []));
+}
+
+function captureAnalyticsEvent(appEvent) {
+    if (!analyticsState.enabled || !appEvent) {
+        return;
+    }
+    const analyticsEvent = buildAnalyticsEvent(appEvent);
+    if (!analyticsEvent) {
+        return;
+    }
+
+    analyticsState.events.push({
+        event: analyticsEvent.event,
+        properties: { ...analyticsEvent.properties },
+    });
+    if (analyticsState.events.length > ANALYTICS_DEBUG_EVENT_LIMIT) {
+        analyticsState.events.splice(0, analyticsState.events.length - ANALYTICS_DEBUG_EVENT_LIMIT);
+    }
+
+    if (analyticsState.mode !== "live") {
+        return;
+    }
+    try {
+        globalThis.posthog?.capture?.(analyticsEvent.event, analyticsEvent.properties);
+    } catch (error) {
+        analyticsState.lastError = error instanceof Error ? error.message : String(error || "Analytics capture failed.");
+    }
+}
+
+function buildAnalyticsEvent(entry) {
+    const common = {
+        event_version: ANALYTICS_EVENT_VERSION,
+        app: "media_minimizer",
+        runtime_mode: normalizeAnalyticsText(entry.runtimeMode || state.ffmpegMode),
+        runtime_preferred: normalizeAnalyticsText(entry.runtimePreferred || state.ffmpegPreferredMode),
+        isolation_source: getIsolationSource(),
+    };
+
+    if (entry.event === "page-load") {
+        return {
+            event: "mm_app_view",
+            properties: {
+                ...common,
+                runtime_isolated: Boolean(entry.isolated),
+                theme: themeState.effectiveTheme,
+            },
+        };
+    }
+
+    if (entry.event === "file-selected") {
+        return {
+            event: "mm_file_select",
+            properties: {
+                ...common,
+                source: normalizeAnalyticsText(entry.source),
+                kind: normalizeAnalyticsText(entry.kind),
+                extension: normalizeAnalyticsText(getExtension(entry.name || "")),
+                size_bucket_mb: bucketBytesForAnalytics(entry.sizeBytes),
+            },
+        };
+    }
+
+    if (entry.event === "minimize-start") {
+        return {
+            event: "mm_minimize_start",
+            properties: {
+                ...common,
+                kind: normalizeAnalyticsText(entry.kind),
+                input_size_bucket_mb: bucketBytesForAnalytics(entry.sizeBytes),
+                target_bucket_mb: bucketBytesForAnalytics(entry.targetBytes),
+                advanced_changed: !isAdvancedVideoSettingsAuto(entry.advancedSettings),
+            },
+        };
+    }
+
+    if (entry.event === "minimize-complete") {
+        return {
+            event: "mm_minimize_end",
+            properties: {
+                ...common,
+                status: normalizeAnalyticsText(entry.status),
+                kind: normalizeAnalyticsText(entry.kind),
+                attempted_modes: Array.isArray(entry.attemptedModes) ? entry.attemptedModes.map(normalizeAnalyticsText).filter(Boolean) : [],
+                total_seconds: millisecondsToAnalyticsSeconds(entry.totalMs),
+                duration_bucket: bucketDurationMsForAnalytics(entry.totalMs),
+                input_size_bucket_mb: bucketBytesForAnalytics(entry.inputSizeBytes),
+                output_size_bucket_mb: bucketBytesForAnalytics(entry.outputSizeBytes),
+                target_bucket_mb: bucketBytesForAnalytics(entry.targetBytes),
+                under_target: typeof entry.underTarget === "boolean" ? entry.underTarget : null,
+                saved_ratio_bucket: bucketSavedRatioForAnalytics(entry.savedRatio),
+                failure_code: normalizeAnalyticsText(entry.failureCode || "none"),
+            },
+        };
+    }
+
+    if (entry.event === "download-click") {
+        return {
+            event: "mm_download_click",
+            properties: {
+                ...common,
+                kind: normalizeAnalyticsText(entry.kind),
+                output_extension: normalizeAnalyticsText(getExtension(entry.outputFilename || "")),
+                output_size_bucket_mb: bucketBytesForAnalytics(entry.outputSizeBytes),
+                saved_ratio_bucket: bucketSavedRatioForAnalytics(entry.savedRatio),
+            },
+        };
+    }
+
+    if (entry.event === "advanced-settings-changed" || entry.event === "advanced-settings-reset") {
+        const settings = extractAdvancedSettingsFromEvent(entry);
+        return {
+            event: entry.event === "advanced-settings-reset" ? "mm_advanced_reset" : "mm_advanced_update",
+            properties: {
+                ...common,
+                all_auto: isAdvancedVideoSettingsAuto(settings),
+                changed_fields: getChangedAdvancedSettingFields(settings),
+            },
+        };
+    }
+
+    if (entry.event === "runtime-fallback") {
+        return {
+            event: "mm_runtime_fallback",
+            properties: {
+                ...common,
+                from: normalizeAnalyticsText(entry.from),
+                to: normalizeAnalyticsText(entry.to),
+                reason: normalizeAnalyticsText(entry.reason),
+            },
+        };
+    }
+
+    if (entry.event === "engine-preload-failed") {
+        return {
+            event: "mm_engine_fail",
+            properties: {
+                ...common,
+            },
+        };
+    }
+
+    return null;
+}
+
+function extractAdvancedSettingsFromEvent(entry) {
+    return {
+        speed: entry.speed,
+        maxHeight: entry.maxHeight,
+        maxFps: entry.maxFps,
+        audio: entry.audio,
+        threads: entry.threads,
+    };
+}
+
+function getChangedAdvancedSettingFields(settings) {
+    if (!settings) {
+        return [];
+    }
+    const fields = [];
+    for (const [key, defaultValue] of Object.entries(DEFAULT_ADVANCED_VIDEO_SETTINGS)) {
+        if (settings[key] && settings[key] !== defaultValue) {
+            fields.push(key);
+        }
+    }
+    return fields;
+}
+
+function millisecondsToAnalyticsSeconds(ms) {
+    return Number.isFinite(ms) ? Number((ms / 1000).toFixed(2)) : null;
+}
+
+function bucketBytesForAnalytics(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) {
+        return "unknown";
+    }
+    const mb = bytes / (1024 * 1024);
+    if (mb < 1) {
+        return "0-1";
+    }
+    if (mb < 5) {
+        return "1-5";
+    }
+    if (mb < 10) {
+        return "5-10";
+    }
+    if (mb < 25) {
+        return "10-25";
+    }
+    if (mb < 50) {
+        return "25-50";
+    }
+    if (mb < 100) {
+        return "50-100";
+    }
+    if (mb < 250) {
+        return "100-250";
+    }
+    if (mb < 500) {
+        return "250-500";
+    }
+    if (mb < 1000) {
+        return "500-1000";
+    }
+    return "1000+";
+}
+
+function bucketDurationMsForAnalytics(ms) {
+    if (!Number.isFinite(ms) || ms < 0) {
+        return "unknown";
+    }
+    const seconds = ms / 1000;
+    if (seconds < 5) {
+        return "0-5";
+    }
+    if (seconds < 15) {
+        return "5-15";
+    }
+    if (seconds < 30) {
+        return "15-30";
+    }
+    if (seconds < 60) {
+        return "30-60";
+    }
+    if (seconds < 120) {
+        return "60-120";
+    }
+    if (seconds < 300) {
+        return "120-300";
+    }
+    return "300+";
+}
+
+function bucketSavedRatioForAnalytics(ratio) {
+    if (!Number.isFinite(ratio)) {
+        return "unknown";
+    }
+    if (ratio <= 0) {
+        return "0";
+    }
+    if (ratio < 0.25) {
+        return "0-25";
+    }
+    if (ratio < 0.5) {
+        return "25-50";
+    }
+    if (ratio < 0.75) {
+        return "50-75";
+    }
+    if (ratio < 0.9) {
+        return "75-90";
+    }
+    return "90-100";
+}
+
+function normalizeAnalyticsText(value) {
+    return String(value || "unknown").trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-") || "unknown";
+}
+
+function sanitizePostHogOutboundEvent(event) {
+    if (!event || typeof event !== "object") {
+        return event;
+    }
+    const hostname = getAnalyticsHostname();
+    if (ANALYTICS_LOCAL_HOSTNAMES.has(hostname) && debugParams.get("analytics") !== "live") {
+        return null;
+    }
+    const properties = event.properties && typeof event.properties === "object" ? event.properties : {};
+    for (const key of Object.keys(properties)) {
+        if (isForbiddenAnalyticsKey(key)) {
+            delete properties[key];
+        }
+    }
+    if (properties.$current_url) {
+        properties.$current_url = stripUrlForAnalytics(properties.$current_url);
+    }
+    if (properties.$referrer) {
+        properties.$referrer = stripUrlForAnalytics(properties.$referrer);
+    }
+    event.properties = properties;
+    return event;
+}
+
+function stripUrlForAnalytics(value) {
+    try {
+        const url = new URL(String(value));
+        return `${url.origin}${url.pathname}`;
+    } catch (error) {
+        return "";
+    }
+}
+
+function isForbiddenAnalyticsKey(key) {
+    const normalized = String(key || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    return ANALYTICS_FORBIDDEN_KEYS.has(normalized);
+}
+
+function getAnalyticsDebugState() {
+    return {
+        mode: analyticsState.mode,
+        enabled: analyticsState.enabled,
+        initialized: analyticsState.initialized,
+        eventCount: analyticsState.events.length,
+        lastError: analyticsState.lastError,
     };
 }
 
@@ -571,6 +1068,8 @@ async function onMinimizeClick() {
         kind: inputType,
         name: state.inputFile?.name || "",
         sizeBytes: state.inputFile?.size || 0,
+        targetBytes,
+        advancedSettings,
     });
     const runMetrics = startRunMetrics(inputType);
     state.lastRunMetrics = runMetrics;
@@ -615,6 +1114,11 @@ async function onMinimizeClick() {
             runtimeMode: state.ffmpegMode,
             attemptedModes: runMetrics?.attemptedModes || [],
             totalMs: runMetrics?.totalMs ?? null,
+            inputSizeBytes: state.inputFile?.size || 0,
+            outputSizeBytes: result.blob?.size || 0,
+            targetBytes,
+            underTarget: result.blob?.size <= targetBytes,
+            savedRatio: calculateSavedRatio(state.inputFile?.size || 0, result.blob?.size || 0),
             notes: runMetrics?.notes || [],
         });
         setOutputResult(result, targetBytes);
@@ -638,6 +1142,8 @@ async function onMinimizeClick() {
             attemptedModes: runMetrics?.attemptedModes || [],
             failureCode: error?.code || "RUN_FAILED",
             totalMs: runMetrics?.totalMs ?? null,
+            inputSizeBytes: state.inputFile?.size || 0,
+            targetBytes,
         });
         setFailedResultState();
         setStatus(message, "error");
@@ -696,6 +1202,13 @@ function setFailedResultState() {
     elements.savedSize.textContent = "-";
     elements.outputName.textContent = "-";
     elements.result.classList.remove("loading");
+}
+
+function calculateSavedRatio(inputBytes, outputBytes) {
+    if (!Number.isFinite(inputBytes) || inputBytes <= 0 || !Number.isFinite(outputBytes)) {
+        return null;
+    }
+    return clamp((inputBytes - outputBytes) / inputBytes, 0, 1);
 }
 
 function startProgressTracker(initialLabel) {
@@ -870,6 +1383,12 @@ function onDownloadClick() {
     if (!state.outputBlob || !state.downloadUrl) {
         return;
     }
+    recordAppEvent("download-click", {
+        kind: state.inputFile ? detectInputType(state.inputFile) : "unknown",
+        outputFilename: state.outputFilename,
+        outputSizeBytes: state.outputBlob.size,
+        savedRatio: calculateSavedRatio(state.inputFile?.size || 0, state.outputBlob.size),
+    });
     const link = document.createElement("a");
     link.href = state.downloadUrl;
     link.download = state.outputFilename;
@@ -2453,6 +2972,7 @@ function recordAppEvent(event, details = {}) {
     if (state.appEvents.length > APP_EVENT_LIMIT) {
         state.appEvents.splice(0, state.appEvents.length - APP_EVENT_LIMIT);
     }
+    captureAnalyticsEvent(entry);
     if (DEBUG_MODE) {
         console.debug("[MediaMinimizer][app-event]", entry);
     }

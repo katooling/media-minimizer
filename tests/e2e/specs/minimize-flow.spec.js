@@ -44,6 +44,21 @@ function expectMetricNotes(metrics, expectedNotes = []) {
     }
 }
 
+async function readAnalyticsEvents(page) {
+    return page.evaluate(() => window.__mediaMinimizerAnalyticsDebug?.getEvents?.() || []);
+}
+
+function findAnalyticsEvent(events, eventName) {
+    return events.find((entry) => entry.event === eventName);
+}
+
+function expectNoAnalyticsLeak(events, forbiddenValues = []) {
+    const serialized = JSON.stringify(events);
+    for (const value of forbiddenValues) {
+        expect(serialized).not.toContain(value);
+    }
+}
+
 async function minimizeFixture(page, fixture) {
     await uploadFixtureVideo(page, fixture);
     await expect(page.locator("#minimizeBtn")).toBeEnabled();
@@ -168,7 +183,7 @@ test("initial load reaches engine ready and uses only local app assets", async (
     const remoteRequests = [];
     page.on("request", (request) => {
         const url = request.url();
-        if (!url.startsWith("http://127.0.0.1:4173/") && !url.startsWith("data:") && !url.startsWith("blob:")) {
+        if (!/^http:\/\/127\.0\.0\.1:\d+\//.test(url) && !url.startsWith("data:") && !url.startsWith("blob:")) {
             remoteRequests.push(url);
         }
     });
@@ -176,6 +191,112 @@ test("initial load reaches engine ready and uses only local app assets", async (
     await openApp(page);
     await expect(page.locator("#status")).toContainText(/Ready|Drop a video or image/);
     expect(remoteRequests).toEqual([]);
+});
+
+test("analytics is disabled by default on local app loads", async ({ page }) => {
+    const remoteRequests = [];
+    page.on("request", (request) => {
+        const url = request.url();
+        if (/posthog/i.test(url)) {
+            remoteRequests.push(url);
+        }
+    });
+
+    await openApp(page);
+
+    const analytics = await page.evaluate(() => window.__mediaMinimizerAnalyticsDebug?.getState?.() || null);
+    expect(analytics?.mode).toBe("disabled");
+    expect(analytics?.enabled).toBe(false);
+    expect(remoteRequests).toEqual([]);
+});
+
+test("privacy note explains browser-only processing and analytics boundaries", async ({ page }) => {
+    await openApp(page);
+
+    await expect(page.locator(".subtle")).toContainText("Your files are not uploaded here.");
+    const privacyNote = page.locator(".privacy-note");
+    await expect(privacyNote).toContainText("Your media stays on this device.");
+    await expect(privacyNote).toContainText("Anonymous analytics may report general app activity");
+    await expect(privacyNote).toContainText("It never sends filenames, file contents, folders, or conversion logs.");
+    await expect(privacyNote).toContainText("Once the app has loaded, minimization can keep working");
+});
+
+test("analytics stub records sanitized visit and file selection events", async ({ page }) => {
+    await openApp(page, "/?analytics=stub");
+    await uploadFile(page, fixturePath("sample.mp4"), {
+        name: "private-holiday-video.mp4",
+        mimeType: "video/mp4",
+    });
+
+    const events = await readAnalyticsEvents(page);
+    const visit = findAnalyticsEvent(events, "mm_app_view");
+    const selected = findAnalyticsEvent(events, "mm_file_select");
+
+    expect(visit?.properties.runtime_isolated).toEqual(expect.any(Boolean));
+    expect(selected?.properties).toMatchObject({
+        source: "picker",
+        kind: "video",
+        extension: ".mp4",
+    });
+    expect(selected?.properties.size_bucket_mb).toEqual(expect.any(String));
+    expectNoAnalyticsLeak(events, ["private-holiday-video.mp4", "sample.mp4"]);
+});
+
+test("analytics stub records sanitized image minimize and download flow", async ({ page }, testInfo) => {
+    await openApp(page, "/?analytics=stub");
+    await uploadFile(page, fixturePath("sample.png"), {
+        name: "private-image-name.png",
+        mimeType: "image/png",
+    });
+
+    await page.locator("#minimizeBtn").click();
+    await expect(page.locator("#status")).toContainText("Done.", { timeout: 15000 });
+    await expect(page.locator("#downloadBtn")).toBeEnabled();
+    await downloadOutput(page, testInfo, "analytics-image");
+
+    const events = await readAnalyticsEvents(page);
+    const started = findAnalyticsEvent(events, "mm_minimize_start");
+    const completed = findAnalyticsEvent(events, "mm_minimize_end");
+    const downloaded = findAnalyticsEvent(events, "mm_download_click");
+
+    expect(started?.properties).toMatchObject({
+        kind: "image",
+        advanced_changed: false,
+    });
+    expect(completed?.properties).toMatchObject({
+        status: "success",
+        kind: "image",
+        failure_code: "none",
+    });
+    expect(completed?.properties.total_seconds).toEqual(expect.any(Number));
+    expect(completed?.properties.input_size_bucket_mb).toEqual(expect.any(String));
+    expect(completed?.properties.output_size_bucket_mb).toEqual(expect.any(String));
+    expect(downloaded?.properties.kind).toBe("image");
+    expect(downloaded?.properties.output_extension).toMatch(/\.(webp|jpg|png)/);
+    expectNoAnalyticsLeak(events, ["private-image-name.png", "analytics-image"]);
+});
+
+test("minimization still works when analytics is blocked and connection drops after load", async ({ page }) => {
+    await page.route(/posthog/i, (route) => route.abort("failed"));
+    await openApp(page, "/?analytics=live");
+
+    const analytics = await page.evaluate(() => window.__mediaMinimizerAnalyticsDebug?.getState?.() || null);
+    expect(analytics?.mode).toBe("live");
+    expect(analytics?.enabled).toBe(true);
+
+    await page.context().setOffline(true);
+    await uploadFile(page, fixturePath("sample.png"), {
+        name: "offline-private-image.png",
+        mimeType: "image/png",
+    });
+    await page.locator("#minimizeBtn").click();
+
+    await expect(page.locator("#status")).toContainText("Done.", { timeout: 15000 });
+    await expect(page.locator("#downloadBtn")).toBeEnabled();
+    const debug = await readDebugState(page);
+    expect(debug.metrics?.kind).toBe("image");
+    expect(debug.metrics?.status).toBe("success");
+    await page.context().setOffline(false);
 });
 
 test("picker upload enables minimize and leaves download disabled", async ({ page }) => {

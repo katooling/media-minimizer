@@ -19,7 +19,8 @@ with a minimal UI:
 - Video input (`video/*`) -> outputs `.mov` using local `ffmpeg.wasm`.
 - Image input (`image/*`) -> outputs optimized image using browser canvas.
 - Unsupported file types are rejected inline.
-- No backend and no upload: processing stays in-browser.
+- No backend and no upload: processing stays in-browser, and selected media files are not sent to the app host or analytics provider.
+- After the static app and encoder assets have loaded, image/video minimization can continue if analytics is blocked or the network connection drops.
 - FFmpeg assets are vendored locally under `vendor/ffmpeg`.
 
 ## Runtime Modes
@@ -119,6 +120,54 @@ Optional URL overrides for local testing:
 - `?debug=1&metadataMock=browser-fails`
 - `?debug=1&inputMock=workerfs-fails`
 - `?debug=1&ffmpegMock=no-progress-complete|stall|mt-stall-fallback|filter-graph-retry|audio-copy-retry|generic-exec-fail`
+
+## Analytics
+
+PostHog analytics are configured as a small optional adapter around the app's local lifecycle events.
+
+Default behavior:
+
+- Localhost, `127.0.0.1`, and unknown hosts do not load PostHog or send analytics.
+- Production analytics are allowed only for configured hostnames in `window.MEDIA_MINIMIZER_ANALYTICS`.
+- The public PostHog project token is safe to ship in `index.html`; do not add a personal API key to this app.
+- Autocapture, pageleave, dead-click capture, session replay, surveys, feature flags, and persistent browser storage are disabled.
+
+Tracked events:
+
+- `mm_app_view`
+- `mm_file_select`
+- `mm_minimize_start`
+- `mm_minimize_end`
+- `mm_download_click`
+- `mm_advanced_update`
+- `mm_advanced_reset`
+- `mm_runtime_fallback`
+- `mm_engine_fail`
+
+Privacy rules:
+
+- Never send filenames, file contents, local paths, FFmpeg logs, terminal lines, or raw failure messages.
+- Send file extensions and size/duration buckets instead of exact identifying file details.
+- Send fixed, snake_case `mm_*` workflow events rather than broad DOM autocapture.
+- Analytics failure must never block file selection, minimization, or download.
+
+Local verification:
+
+```bash
+npm run test:e2e:agent -- --grep "analytics"
+```
+
+Manual stub mode:
+
+```text
+http://127.0.0.1:8000/?analytics=stub
+```
+
+Then inspect:
+
+```js
+window.__mediaMinimizerAnalyticsDebug.getEvents()
+```
 
 ## Cross-Origin Isolation on GitHub Pages
 

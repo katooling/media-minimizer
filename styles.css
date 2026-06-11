@@ -56,6 +56,9 @@
     --file-processing-border: #bfd3f7;
     --file-processing-bg: #e8f1ff;
     --file-size-bg: rgba(0, 0, 0, 0.04);
+    --privacy-bg: #f7f9f7;
+    --privacy-border: #d8e3d8;
+    --privacy-title: #214d2a;
     --progress-bg: #f9fbff;
     --progress-track: #dbe8ff;
     --progress-value: #2f7bff;
@@ -130,6 +133,9 @@
         --file-processing-border: #3a5f94;
         --file-processing-bg: #172b49;
         --file-size-bg: rgba(255, 255, 255, 0.08);
+        --privacy-bg: #1f2821;
+        --privacy-border: #344a37;
+        --privacy-title: #9ed8a8;
         --progress-bg: #1d2430;
         --progress-track: #273956;
         --progress-value: #4aa3ff;
@@ -197,6 +203,9 @@
     --file-processing-border: #3a5f94;
     --file-processing-bg: #172b49;
     --file-size-bg: rgba(255, 255, 255, 0.08);
+    --privacy-bg: #1f2821;
+    --privacy-border: #344a37;
+    --privacy-title: #9ed8a8;
     --progress-bg: #1d2430;
     --progress-track: #273956;
     --progress-value: #4aa3ff;
@@ -501,6 +510,25 @@ h1 {
     background: var(--file-size-bg);
     border-radius: 999px;
     padding: 2px 8px;
+}
+
+.privacy-note {
+    border: 1px solid var(--privacy-border);
+    border-radius: var(--radius-sm);
+    background: var(--privacy-bg);
+    padding: 12px;
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.privacy-note h3 {
+    color: var(--privacy-title);
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0;
 }
 
 .progress-wrap {
