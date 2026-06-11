@@ -115,7 +115,10 @@ Optional URL overrides for local testing:
 
 - `?debug=1&stallMs=2500`
 - `?debug=1&encodeTimeoutMs=20000`
-- `?debug=1&ffmpegMock=no-progress-complete|stall|mt-stall-fallback|filter-graph-retry`
+- `?debug=1&runtimeMock=st-only`
+- `?debug=1&metadataMock=browser-fails`
+- `?debug=1&inputMock=workerfs-fails`
+- `?debug=1&ffmpegMock=no-progress-complete|stall|mt-stall-fallback|filter-graph-retry|audio-copy-retry|generic-exec-fail`
 
 ## Cross-Origin Isolation on GitHub Pages
 
@@ -144,12 +147,23 @@ Open: `http://127.0.0.1:8000`
 ```bash
 cd /Users/mkamar/Non_Work/Projects/media-minimizer
 npm install
+npm run fixtures:generate
 npm run fixtures:download:web
-npm run test:e2e
+npm run test:e2e:core
+npm run test:e2e:media
 npm run test:e2e:real-video
+npm run test:e2e:real-video:all
 npm run test:e2e:real-video:mt
 npm run bench:video
 ```
+
+E2E tiers:
+
+- `npm run test:e2e:core`: fast PR gate for UI flows, image flows, runtime mocks, passthrough, remux, one MP4 encode, one WebM recovery, and failure cases.
+- `npm run test:e2e:media`: full committed generated video matrix.
+- `npm run test:e2e:real-video:all`: local/private real-world videos, including `local-debug-video.mov` when present.
+- `npm run test:e2e:release`: `core + media + real-video:all`.
+- `npm run test:e2e:agent`: deterministic local debug workflow with artifacts and real-video smoke.
 
 Fixture matrix controls:
 
@@ -169,6 +183,9 @@ VIDEO_FIXTURE_IDS=web-webm-640x360,web-mov-640x360 npm run test:e2e -- --grep "v
 
 # override fixture max-size target for conversion stress runs
 VIDEO_FIXTURE_MAX_SIZE_MB=0.005 npm run test:e2e:video:all
+
+# add extra manifest files, comma-separated
+VIDEO_FIXTURE_MANIFESTS=/abs/path/video-fixtures.extra.json npm run test:e2e:media
 ```
 
 `test:e2e:real-video` uses:
@@ -181,12 +198,28 @@ VIDEO_FIXTURE_MAX_SIZE_MB=0.005 npm run test:e2e:video:all
 - starts a local static server automatically for the smoke run
 - `test:e2e:real-video:mt` additionally asserts that MT was attempted
 
+`test:e2e:real-video:all` uses:
+
+- default local fixture: `tests/e2e/fixtures/local-debug-video.mov`
+- `REAL_VIDEO_MANIFEST` for private real-world fixture manifests
+- absolute paths in manifest entries are supported
+- example private manifest: `tests/e2e/fixtures/private/video-fixtures.local.example.json`
+
 ## Web Test Fixtures
 
 Generic, small web fixtures live in `tests/e2e/fixtures/web` and are used for cross-format conversion coverage (`.mp4`, `.webm`, `.mov`).
 
 - Source and checksums: `tests/e2e/fixtures/WEB_FIXTURES.md`
 - Redownload helper: `npm run fixtures:download:web`
+
+## Generated Test Fixtures
+
+Deterministic generated fixtures live in `tests/e2e/fixtures/generated` and cover passthrough, remux-only, encode, fallback, WebM recovery, odd dimensions, rotation metadata, 60 fps, screen-recording-like MOV, PCM-audio MOV, corrupt video, empty video, and image edge cases.
+
+- Regenerate helper: `npm run fixtures:generate`
+- Checksums: `tests/e2e/fixtures/GENERATED_FIXTURES.md`
+- Generation requires local `ffmpeg` and `ffprobe`.
+- Generation is explicit; ordinary test runs never regenerate media.
 
 ## Agent E2E Workflow
 

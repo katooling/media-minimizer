@@ -72,6 +72,9 @@ const PROGRESS_TICK_INTERVAL_MS = 250;
 const debugParams = typeof globalThis.location !== "undefined" ? new URLSearchParams(globalThis.location.search) : new URLSearchParams("");
 const DEBUG_MODE = debugParams.get("debug") === "1";
 const DEBUG_MOCK_MODE = debugParams.get("ffmpegMock") || "";
+const DEBUG_METADATA_MOCK = DEBUG_MODE ? debugParams.get("metadataMock") || "" : "";
+const DEBUG_INPUT_MOCK = DEBUG_MODE ? debugParams.get("inputMock") || "" : "";
+const DEBUG_RUNTIME_MOCK = DEBUG_MODE ? debugParams.get("runtimeMock") || "" : "";
 const DEBUG_TRACE_LIMIT = 300;
 const DEBUG_LOG_LIMIT = 250;
 const APP_EVENT_LIMIT = 600;
@@ -88,6 +91,7 @@ const MT_SOFT_STALL_THRESHOLD_MS = 8_000;
 const MT_FIRST_PROGRESS_GRACE_MIN_MS = 55_000;
 const MT_FIRST_PROGRESS_GRACE_MAX_MS = 150_000;
 const ENCODE_TIMEOUT_MS = Number.isFinite(parsedDebugTimeoutMs) && parsedDebugTimeoutMs > 1000 ? parsedDebugTimeoutMs : 12 * 60 * 1000;
+const IMAGE_DECODE_TIMEOUT_MS = 8_000;
 const FFMPEG_ERROR_TAIL_LIMIT = 120;
 const MT_THREADS_MIN = 2;
 const MT_THREADS_MAX = 4;
@@ -821,6 +825,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
         beginStage(runMetrics, "metadata");
         const browserMetadata = await probeVideoMetadataFromBrowser(file);
         let durationSeconds = browserMetadata?.durationSeconds ?? null;
+        const sourceWidth = browserMetadata?.width ?? null;
         const sourceHeight = browserMetadata?.height ?? null;
         let durationSource = "browser";
         if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
@@ -830,11 +835,13 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
         endStage(runMetrics, "metadata", {
             durationSeconds: Number.isFinite(durationSeconds) ? Number(durationSeconds.toFixed(3)) : null,
             durationSource,
+            sourceWidth: Number.isFinite(sourceWidth) ? sourceWidth : null,
             sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : null,
         });
         traceEvent("metadata-ready", {
             durationSeconds: Number.isFinite(durationSeconds) ? Number(durationSeconds.toFixed(3)) : null,
             durationSource,
+            sourceWidth: Number.isFinite(sourceWidth) ? sourceWidth : null,
             sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : null,
         });
 
@@ -878,6 +885,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             durationSeconds,
             aggressive: false,
             copyAudioSafe,
+            sourceWidth,
             sourceHeight,
             runtimeMode: state.ffmpegMode,
             advancedSettings,
@@ -903,6 +911,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
                 reductionFactor,
                 baseProfile: bestAttempt.profile,
                 copyAudioSafe: false,
+                sourceWidth,
                 sourceHeight,
                 runtimeMode: state.ffmpegMode,
                 advancedSettings,
@@ -990,7 +999,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         profile: activeProfile,
         args: activeArgs,
     });
-    let exitCode = await execVideoWithWatchdog({
+    let exitCode = await execVideoForRetryableAttempt({
         ffmpeg,
         args: activeArgs,
         attemptLabel,
@@ -1013,7 +1022,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
             profile: activeProfile,
             args: activeArgs,
         });
-        exitCode = await execVideoWithWatchdog({
+        exitCode = await execVideoForRetryableAttempt({
             ffmpeg,
             args: activeArgs,
             attemptLabel: `${attemptLabel} (audio retry)`,
@@ -1054,10 +1063,54 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
                 profile: activeProfile,
                 args: activeArgs,
             });
-            exitCode = await execVideoWithWatchdog({
+            exitCode = await execVideoForRetryableAttempt({
                 ffmpeg,
                 args: activeArgs,
                 attemptLabel: `${attemptLabel} (filterless)`,
+                inputPath,
+                outputPath,
+                durationSeconds,
+                modeAtStart,
+            });
+        }
+    }
+
+    if (exitCode !== 0) {
+        const classifiedError = classifyEncodeFailure({
+            attemptLabel,
+            mode: modeAtStart,
+            profile: activeProfile,
+        });
+        if (activeProfile.audioMode !== "drop" && hasRecentRecoverableAudioError()) {
+            attempts += 1;
+            traceEvent("encode-retry", {
+                retryType: "drop-audio",
+                attemptLabel,
+                reason: classifiedError.code,
+            });
+            appendMetricNote(runMetrics, "audio-drop-retry");
+            setProgressUpdate(`Compatibility retry (${attemptLabel}, video only)`, null);
+            setStatus("Video compatibility retry in progress (without audio).", "info");
+            await safelyDeleteFile(ffmpeg, outputPath);
+            activeProfile = {
+                ...activeProfile,
+                audioMode: "drop",
+                audioKbps: null,
+                maxFps: null,
+                maxHeight: null,
+                forceNoFilters: true,
+            };
+            activeArgs = buildVideoEncodeArgs(inputPath, outputPath, activeProfile);
+            setLastEncodePlan({
+                attemptLabel: `${attemptLabel} (video only)`,
+                mode: modeAtStart,
+                profile: activeProfile,
+                args: activeArgs,
+            });
+            exitCode = await execVideoForRetryableAttempt({
+                ffmpeg,
+                args: activeArgs,
+                attemptLabel: `${attemptLabel} (video only)`,
                 inputPath,
                 outputPath,
                 durationSeconds,
@@ -1091,6 +1144,18 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
     };
 }
 
+async function execVideoForRetryableAttempt(options) {
+    try {
+        return await execVideoWithWatchdog(options);
+    } catch (error) {
+        if (error?.code === "ENCODE_STALLED" || error?.code === "ENCODE_TIMEOUT") {
+            throw error;
+        }
+        recordFfmpegLog(error instanceof Error ? error.message : String(error || "Encode failed."), "stderr");
+        return 1;
+    }
+}
+
 function setLastEncodePlan({ attemptLabel, mode, profile, args }) {
     state.lastEncodePlan = {
         attemptLabel: attemptLabel || "",
@@ -1105,7 +1170,9 @@ async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, ou
     const hasMockScenario = DEBUG_MOCK_MODE === "no-progress-complete"
         || DEBUG_MOCK_MODE === "stall"
         || DEBUG_MOCK_MODE === "mt-stall-fallback"
-        || DEBUG_MOCK_MODE === "filter-graph-retry";
+        || DEBUG_MOCK_MODE === "filter-graph-retry"
+        || DEBUG_MOCK_MODE === "audio-copy-retry"
+        || DEBUG_MOCK_MODE === "generic-exec-fail";
     if (hasMockScenario) {
         return runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath, args });
     }
@@ -1294,6 +1361,25 @@ async function runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath, a
         return 0;
     }
 
+    if (DEBUG_MOCK_MODE === "audio-copy-retry") {
+        const audioCopyIndex = Array.isArray(args) ? args.indexOf("-c:a") : -1;
+        const hasAudioCopy = audioCopyIndex >= 0 && args[audioCopyIndex + 1] === "copy";
+        if (hasAudioCopy) {
+            recordFfmpegLog("Could not write header for output file #0: Invalid argument", "stderr");
+            recordFfmpegLog("Conversion failed!", "stderr");
+            return 1;
+        }
+        const inputData = await ffmpeg.readFile(inputPath);
+        await ffmpeg.writeFile(outputPath, inputData.slice(0, Math.min(inputData.length, 1024)));
+        return 0;
+    }
+
+    if (DEBUG_MOCK_MODE === "generic-exec-fail") {
+        recordFfmpegLog("Unsupported codec or corrupt input stream", "stderr");
+        recordFfmpegLog("Conversion failed!", "stderr");
+        return 1;
+    }
+
     return 0;
 }
 
@@ -1332,8 +1418,6 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         "-stats",
         "-map",
         "0:v:0",
-        "-map",
-        "0:a?",
         "-map_metadata",
         "-1",
         "-c:v",
@@ -1362,20 +1446,32 @@ function buildVideoEncodeArgs(inputPath, outputPath, profile) {
         }
         if (Number.isFinite(profile.maxHeight) && profile.maxHeight > 0) {
             filters.push(`scale=-2:${profile.maxHeight}`);
+        } else if (profile.forceEvenDimensions) {
+            filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
         }
         if (filters.length > 0) {
             args.push("-vf", filters.join(","));
         }
     }
 
-    if (profile.audioMode === "copy") {
-        args.push("-c:a", "copy");
+    if (profile.audioMode === "drop") {
+        args.push("-an");
+    } else if (profile.audioMode === "copy") {
+        args.push("-map", "0:a?", "-c:a", "copy");
     } else {
-        args.push("-c:a", "aac", "-b:a", `${profile.audioKbps}k`);
+        args.push("-map", "0:a?", "-c:a", "aac", "-b:a", `${profile.audioKbps}k`);
     }
 
     args.push("-f", "mov", outputPath);
     return args;
+}
+
+function hasRecentRecoverableAudioError() {
+    const joined = getRecentFfmpegStderrLines(FFMPEG_ERROR_TAIL_LIMIT).join("\n");
+    const mentionsAudioStream = /type audio|audio:|stream #0:\d+/i.test(joined);
+    const hasAudioFilterFailure = /filter|decoded data|output pad/i.test(joined);
+    const hasMissingAudioDecoder = /decoder .*not found for input stream #0:\d+/i.test(joined);
+    return mentionsAudioStream && (hasAudioFilterFailure || hasMissingAudioDecoder);
 }
 
 function buildVideoEncodeProfile({
@@ -1385,6 +1481,7 @@ function buildVideoEncodeProfile({
     reductionFactor = 1,
     baseProfile = null,
     copyAudioSafe = false,
+    sourceWidth = null,
     sourceHeight = null,
     runtimeMode = "unknown",
     advancedSettings = DEFAULT_ADVANCED_VIDEO_SETTINGS,
@@ -1402,6 +1499,7 @@ function buildVideoEncodeProfile({
             videoKbps,
             audioKbps,
             audioMode,
+            sourceWidth: Number.isFinite(sourceWidth) ? sourceWidth : baseProfile.sourceWidth,
             sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : baseProfile.sourceHeight,
             runtimeMode: runtimeMode || baseProfile.runtimeMode,
             advancedSettings: resolvedAdvanced,
@@ -1416,6 +1514,9 @@ function buildVideoEncodeProfile({
 
     let audioBps = clamp(Math.floor(targetTotalBps * 0.11), 56_000, 112_000);
     let audioMode = copyAudioSafe && targetTotalBps > 650_000 && !aggressive ? "copy" : "encode";
+    if (DEBUG_MOCK_MODE === "audio-copy-retry" && copyAudioSafe && !aggressive) {
+        audioMode = "copy";
+    }
     if (audioMode === "copy") {
         audioBps = 96_000;
     }
@@ -1434,6 +1535,7 @@ function buildVideoEncodeProfile({
         videoKbps,
         audioKbps,
         audioMode,
+        sourceWidth,
         sourceHeight,
         runtimeMode,
         advancedSettings: resolvedAdvanced,
@@ -1531,6 +1633,7 @@ function buildProfileWithCaps({
     videoKbps,
     audioKbps,
     audioMode,
+    sourceWidth = null,
     sourceHeight = null,
     runtimeMode = "unknown",
     advancedSettings = DEFAULT_ADVANCED_VIDEO_SETTINGS,
@@ -1580,6 +1683,7 @@ function buildProfileWithCaps({
     const defaultThreads = selectEncodeThreads(runtimeMode, sourceHeight);
     const encodeThreads = resolveAdvancedEncodeThreads(advancedSettings.threads, runtimeMode, defaultThreads);
     const tune = resolveDefaultTune(speedMode, runtimeMode);
+    const forceEvenDimensions = isOddDimension(sourceWidth) || isOddDimension(sourceHeight);
 
     return {
         preset,
@@ -1588,15 +1692,21 @@ function buildProfileWithCaps({
         videoKbps,
         audioKbps: resolvedAudioKbps,
         audioMode: resolvedAudioMode,
+        sourceWidth,
         sourceHeight,
         runtimeMode,
         maxHeight,
         maxFps,
         forceNoFilters: false,
+        forceEvenDimensions,
         encodeThreads,
         maxrateKbps: Math.max(videoKbps + 80, Math.floor(videoKbps * 1.18)),
         bufsizeKbps: Math.max(videoKbps + 160, Math.floor(videoKbps * 1.9)),
     };
+}
+
+function isOddDimension(value) {
+    return Number.isFinite(value) && Math.round(value) % 2 !== 0;
 }
 
 function estimateVideoEtaBand(durationSeconds, mode) {
@@ -1614,6 +1724,9 @@ function estimateVideoEtaBand(durationSeconds, mode) {
 }
 
 function shouldTryRemuxOnly(file, targetBytes) {
+    if (DEBUG_MOCK_MODE === "audio-copy-retry") {
+        return false;
+    }
     const ext = getExtension(file.name);
     if (ext === ".mov" || ext === ".avi") {
         return false;
@@ -1770,6 +1883,12 @@ async function probeVideoMetadataFromBrowser(file) {
     if (typeof document === "undefined") {
         return null;
     }
+    if (DEBUG_METADATA_MOCK === "browser-fails") {
+        recordAppEvent("metadata-browser-mock-failed", {
+            name: file?.name || "",
+        });
+        return null;
+    }
 
     const objectUrl = URL.createObjectURL(file);
     const video = document.createElement("video");
@@ -1819,26 +1938,67 @@ async function probeVideoMetadataFromBrowser(file) {
 }
 
 async function probeDurationSeconds(ffmpeg, inputPath, outputPath) {
-    await safelyDeleteFile(ffmpeg, outputPath);
-    const exitCode = await ffmpeg.ffprobe([
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        inputPath,
-        "-o",
-        outputPath,
-    ]);
+    const attempts = [
+        {
+            label: "documented-output-last",
+            args: [
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                inputPath,
+                "-o",
+                outputPath,
+            ],
+        },
+        {
+            label: "output-first",
+            args: [
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                "-o",
+                outputPath,
+                inputPath,
+            ],
+        },
+    ];
 
-    if (exitCode !== 0) {
-        return null;
+    for (const attempt of attempts) {
+        await safelyDeleteFile(ffmpeg, outputPath);
+        const exitCode = await ffmpeg.ffprobe(attempt.args);
+        try {
+            const rawDuration = await ffmpeg.readFile(outputPath, "utf8");
+            const parsed = Number.parseFloat(String(rawDuration).trim());
+            if (Number.isFinite(parsed) && parsed > 0) {
+                if (exitCode !== 0) {
+                    traceEvent("metadata-ffprobe-nonzero", {
+                        attempt: attempt.label,
+                        exitCode,
+                    });
+                }
+                return parsed;
+            }
+            traceEvent("metadata-ffprobe-failed", {
+                attempt: attempt.label,
+                exitCode,
+                reason: "invalid-duration",
+            });
+        } catch (error) {
+            traceEvent("metadata-ffprobe-failed", {
+                attempt: attempt.label,
+                exitCode,
+                reason: "missing-output",
+            });
+        }
     }
 
-    const rawDuration = await ffmpeg.readFile(outputPath, "utf8");
-    const parsed = Number.parseFloat(String(rawDuration).trim());
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    return null;
 }
 
 async function prepareVideoInput(ffmpeg, file) {
@@ -1850,6 +2010,9 @@ async function prepareVideoInput(ffmpeg, file) {
 
     try {
         await ffmpeg.createDir(mountPoint);
+        if (DEBUG_INPUT_MOCK === "workerfs-fails") {
+            throw new Error("Debug input mock forced WORKERFS mount failure.");
+        }
         await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, mountPoint);
         return {
             mounted: true,
@@ -1890,8 +2053,9 @@ async function cleanupVideoInput(ffmpeg, inputHandle) {
 }
 
 function getRuntimeModePriority(isIsolated, fileSizeBytes = null) {
+    const effectiveIsIsolated = DEBUG_RUNTIME_MOCK === "st-only" ? false : isIsolated;
     const prefersLarge = !Number.isFinite(fileSizeBytes) || fileSizeBytes >= ST_LARGE_THRESHOLD_BYTES;
-    if (isIsolated && !state.disableMtForSession) {
+    if (effectiveIsIsolated && !state.disableMtForSession) {
         return prefersLarge ? ["mt-fast", "st-large", "st-lite"] : ["mt-fast", "st-lite", "st-large"];
     }
     return prefersLarge ? ["st-large", "st-lite"] : ["st-lite", "st-large"];
@@ -2001,7 +2165,8 @@ async function minimizeImage(file, targetBytes, runMetrics) {
     beginStage(runMetrics, "image-read");
     setProgressUpdate("Reading image", 5);
     setStatus("Reading image...", "info");
-    const bitmap = await createImageBitmap(file);
+    await validateImageHeader(file);
+    const bitmap = await createImageBitmapWithTimeout(file, IMAGE_DECODE_TIMEOUT_MS);
     endStage(runMetrics, "image-read");
 
     try {
@@ -2301,6 +2466,55 @@ function delay(ms) {
     return new Promise((resolve) => {
         globalThis.setTimeout(resolve, ms);
     });
+}
+
+function createImageBitmapWithTimeout(file, timeoutMs) {
+    let timeoutId = null;
+    const timeout = new Promise((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => {
+            reject(createAppError("IMAGE_DECODE_TIMEOUT", "Image decode timed out. Use a different image file."));
+        }, timeoutMs);
+    });
+    return Promise.race([
+        createImageBitmap(file),
+        timeout,
+    ]).finally(() => {
+        if (timeoutId) {
+            globalThis.clearTimeout(timeoutId);
+        }
+    });
+}
+
+async function validateImageHeader(file) {
+    const ext = getExtension(file.name);
+    const bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    const startsWith = (signature) => signature.every((value, index) => bytes[index] === value);
+    const ascii = (start, length) => String.fromCharCode(...bytes.slice(start, start + length));
+
+    if (ext === ".png" || file.type === "image/png") {
+        if (!startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+            throw createAppError("IMAGE_INVALID", "Image file is invalid or unsupported.");
+        }
+        return;
+    }
+    if (ext === ".jpg" || ext === ".jpeg" || file.type === "image/jpeg") {
+        if (!startsWith([0xff, 0xd8, 0xff])) {
+            throw createAppError("IMAGE_INVALID", "Image file is invalid or unsupported.");
+        }
+        return;
+    }
+    if (ext === ".webp" || file.type === "image/webp") {
+        if (!(ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP")) {
+            throw createAppError("IMAGE_INVALID", "Image file is invalid or unsupported.");
+        }
+        return;
+    }
+    if (ext === ".gif" || file.type === "image/gif") {
+        const header = ascii(0, 6);
+        if (header !== "GIF87a" && header !== "GIF89a") {
+            throw createAppError("IMAGE_INVALID", "Image file is invalid or unsupported.");
+        }
+    }
 }
 
 async function imageHasAlpha(bitmap) {

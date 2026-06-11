@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "privateFixture": true,
+  "videos": [
+    {
+      "id": "iphone-screen-recording-example",
+      "path": "/absolute/path/to/private/screen-recording.mov",
+      "uploadName": "iphone-screen-recording.mov",
+      "mimeType": "video/quicktime",
+      "maxSizeMb": 10,
+      "tags": ["real", "screen-recording"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "shouldFitTarget": true,
+        "ffprobeRequired": true
+      }
+    }
+  ]
+}

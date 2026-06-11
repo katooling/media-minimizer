@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Minimizer — UI Prototypes</title>
+    <link rel="icon" href="data:,">
+    <!-- Reuse the real design tokens + base component classes, then layer variant CSS. -->
+    <link rel="stylesheet" href="../styles.css">
+    <link rel="stylesheet" href="variants.css">
+</head>
+<body>
+    <div id="proto-root"></div>
+
+    <!-- Cross-origin isolation (enables MT engine). Harmless if it falls back to ST. -->
+    <script>
+        window.coi = { quiet: true, doReload: () => window.location.reload() };
+    </script>
+    <script src="../coi-serviceworker.js"></script>
+
+    <script type="module">
+        import { VARIANTS } from "./variants.js";
+
+        const KEYS = Object.keys(VARIANTS); // A..E
+        const params = new URLSearchParams(location.search);
+        const current = KEYS.includes((params.get("variant") || "").toUpperCase())
+            ? params.get("variant").toUpperCase()
+            : "A";
+
+        // 1. Render the chosen variant's markup (contains all canonical control IDs).
+        document.getElementById("proto-root").innerHTML = VARIANTS[current].render();
+
+        // 2. Build the floating switcher (clearly not part of any design).
+        function goto(delta) {
+            const i = (KEYS.indexOf(current) + delta + KEYS.length) % KEYS.length;
+            const next = new URLSearchParams(location.search);
+            next.set("variant", KEYS[i]);
+            location.search = next.toString();
+        }
+        const bar = document.createElement("div");
+        bar.id = "proto-switcher";
+        bar.innerHTML = `
+            <button type="button" aria-label="Previous variant" data-dir="-1">‹</button>
+            <span class="proto-label"><span class="proto-key">${current}</span> — ${VARIANTS[current].name}</span>
+            <button type="button" aria-label="Next variant" data-dir="1">›</button>`;
+        bar.querySelectorAll("button").forEach((b) =>
+            b.addEventListener("click", () => goto(Number(b.dataset.dir)))
+        );
+        document.body.appendChild(bar);
+
+        document.addEventListener("keydown", (e) => {
+            const t = e.target;
+            if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+            if (e.key === "ArrowLeft") goto(-1);
+            if (e.key === "ArrowRight") goto(1);
+        });
+
+        // 3. Boot the REAL engine. app.js binds to the IDs we just injected and
+        //    calls init() on import — must run AFTER the markup exists.
+        await import("../app.js");
+    </script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "videos": [
     {
       "id": "legacy-sample-mp4",
@@ -7,7 +7,15 @@
       "uploadName": "legacy-sample-force-encode.mp4",
       "mimeType": "video/mp4",
       "maxSizeMb": 0.001,
-      "tags": ["smoke", "legacy"]
+      "tags": ["core", "smoke", "legacy"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"],
+        "forbiddenTraceEvents": ["encode-retry"]
+      }
     },
     {
       "id": "web-mp4-640x360",
@@ -15,7 +23,14 @@
       "uploadName": "web-sample-640x360.mp4",
       "mimeType": "video/mp4",
       "maxSizeMb": 0.001,
-      "tags": ["smoke", "web"]
+      "tags": ["core", "smoke", "web"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
     },
     {
       "id": "web-webm-640x360",
@@ -23,7 +38,14 @@
       "uploadName": "web-sample-640x360.webm",
       "mimeType": "video/webm",
       "maxSizeMb": 0.001,
-      "tags": ["all", "web"]
+      "tags": ["core", "all", "web"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
     },
     {
       "id": "web-mov-640x360",
@@ -31,7 +53,257 @@
       "uploadName": "web-sample-640x360.mov",
       "mimeType": "video/quicktime",
       "maxSizeMb": 0.001,
-      "tags": ["all", "web", "quicktime"]
+      "tags": ["all", "media", "web", "quicktime"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-under-target-mov",
+      "path": "generated/under-target.mov",
+      "uploadName": "under-target.mov",
+      "mimeType": "video/quicktime",
+      "maxSizeMb": 1,
+      "tags": ["core", "media", "passthrough"],
+      "expect": {
+        "branch": "passthrough",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "shouldFitTarget": true,
+        "ffprobeRequired": true,
+        "expectedNotes": ["passthrough"],
+        "forbiddenTraceEvents": ["encode-start", "output-read"]
+      }
+    },
+    {
+      "id": "generated-near-target-remux-mp4",
+      "path": "generated/near-target-remux.mp4",
+      "uploadName": "near-target-remux.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 1,
+      "tags": ["core", "media", "remux"],
+      "expect": {
+        "branch": "remux-only",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "shouldFitTarget": true,
+        "ffprobeRequired": true,
+        "expectedNotes": ["remux-only"],
+        "forbiddenTraceEvents": ["encode-start"]
+      }
+    },
+    {
+      "id": "generated-tiny-h264-aac-mp4",
+      "path": "generated/tiny-h264-aac.mp4",
+      "uploadName": "tiny-h264-aac-input.avi",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 1,
+      "tags": ["core", "media", "h264", "audio"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-tiny-h264-no-audio",
+      "path": "generated/tiny-h264-no-audio.mp4",
+      "uploadName": "tiny-h264-no-audio.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.04,
+      "tags": ["media", "h264", "no-audio"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectNoAudio": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-tiny-h264-aac-mov",
+      "path": "generated/tiny-h264-aac.mov",
+      "uploadName": "tiny-h264-aac-mov-input.avi",
+      "mimeType": "video/quicktime",
+      "maxSizeMb": 1,
+      "tags": ["media", "quicktime", "audio"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-webm-vp8-opus",
+      "path": "generated/webm-vp8-opus.webm",
+      "uploadName": "webm-vp8-opus.webm",
+      "mimeType": "video/webm",
+      "maxSizeMb": 0.04,
+      "tags": ["core", "media", "webm", "audio"],
+      "expect": {
+        "branch": "filterless-retry",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedNotes": ["filterless-retry", "audio-drop-retry"],
+        "expectedTraceEvents": ["encode-start", "encode-retry", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-portrait-1080x1920",
+      "path": "generated/portrait-1080x1920.mp4",
+      "uploadName": "portrait-1080x1920.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.08,
+      "tags": ["media", "portrait"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-square-720",
+      "path": "generated/square-720.mp4",
+      "uploadName": "square-720.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.06,
+      "tags": ["media", "square"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-odd-dimensions-321x241",
+      "path": "generated/odd-dimensions-321x241.mp4",
+      "uploadName": "odd-dimensions-321x241.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.01,
+      "tags": ["media", "odd-dimensions"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-fps-60",
+      "path": "generated/fps-60.mp4",
+      "uploadName": "fps-60.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.05,
+      "tags": ["media", "fps"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-rotated-metadata",
+      "path": "generated/rotated-metadata.mp4",
+      "uploadName": "rotated-metadata.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.03,
+      "tags": ["media", "rotation"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-silent-screen-recording",
+      "path": "generated/silent-screen-recording.mov",
+      "uploadName": "silent-screen-recording.mov",
+      "mimeType": "video/quicktime",
+      "maxSizeMb": 0.05,
+      "tags": ["media", "screen-recording", "quicktime"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-pcm-audio-mov",
+      "path": "generated/pcm-audio.mov",
+      "uploadName": "pcm-audio.mov",
+      "mimeType": "video/quicktime",
+      "maxSizeMb": 0.05,
+      "tags": ["media", "pcm-audio", "quicktime"],
+      "expect": {
+        "branch": "encode",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedNotes": ["audio-drop-retry"],
+        "expectedTraceEvents": ["encode-start", "encode-retry", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-encode-fallback",
+      "path": "generated/tiny-h264-aac.mp4",
+      "uploadName": "encode-fallback-tiny-target.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.001,
+      "tags": ["media", "fallback"],
+      "expect": {
+        "branch": "encode-fallback",
+        "outputContainer": "mov",
+        "shouldEnableDownload": true,
+        "ffprobeRequired": true,
+        "expectedTraceEvents": ["encode-start", "output-read", "run-end"]
+      }
+    },
+    {
+      "id": "generated-corrupt-video",
+      "path": "generated/corrupt-video.mp4",
+      "uploadName": "corrupt-video.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.001,
+      "tags": ["core", "media", "failure"],
+      "expect": {
+        "branch": "failure",
+        "shouldEnableDownload": false,
+        "expectedTraceEvents": ["run-end"]
+      }
+    },
+    {
+      "id": "generated-empty-video",
+      "path": "generated/empty-file.mp4",
+      "uploadName": "empty-file.mp4",
+      "mimeType": "video/mp4",
+      "maxSizeMb": 0.001,
+      "tags": ["media", "failure"],
+      "expect": {
+        "branch": "failure",
+        "shouldEnableDownload": false,
+        "expectedTraceEvents": ["run-end"]
+      }
     }
   ]
 }

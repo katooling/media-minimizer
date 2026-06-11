@@ -4,3 +4,6 @@ playwright-report/
 tools/ffmpeg-core/.tmp/
 tools/ffmpeg-core/out/
 tests/e2e/fixtures/local-debug-video.mov
+tests/e2e/fixtures/private/*
+!tests/e2e/fixtures/private/
+!tests/e2e/fixtures/private/video-fixtures.local.example.json
