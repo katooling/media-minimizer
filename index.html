@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Media Minimizer</title>
     <link rel="icon" href="data:,">
+    <script>
+        try {
+            const theme = localStorage.getItem("mm-theme");
+            if (theme === "light" || theme === "dark") {
+                document.documentElement.dataset.theme = theme;
+            }
+        } catch (error) {
+            // Keep the system theme if storage is unavailable.
+        }
+    </script>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,7 +22,13 @@
         <header class="title-block">
             <div class="title-row">
                 <h1>Media Minimizer</h1>
-                <span id="engineBadge" class="engine-badge loading" aria-live="polite">Engine: Loading</span>
+                <div class="title-actions">
+                    <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">🌙</button>
+                    <span class="badge-wrap">
+                        <span id="engineBadge" class="engine-badge loading" aria-live="polite" tabindex="0">Engine: Loading</span>
+                        <span id="badgeTip" class="badge-tip" role="tooltip">The video encoder is loading in your browser. Image minimization works right away.</span>
+                    </span>
+                </div>
             </div>
             <p class="subtle">Client-only converter for large uploads. Video to .mov, image to optimized image.</p>
         </header>

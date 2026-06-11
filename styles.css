@@ -9,6 +9,7 @@
 }
 
 :root {
+    color-scheme: light dark;
     --bg: #f5f5f7;
     --panel: #ffffff;
     --text: #1d1d1f;
@@ -25,9 +26,194 @@
     --success-bg: #dcfce7;
     --success-text: #166534;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    --on-primary: #ffffff;
+    --focus-ring: rgba(0, 122, 255, 0.16);
+    --focus-ring-strong: rgba(0, 122, 255, 0.35);
+    --focus-ring-drop: rgba(0, 122, 255, 0.18);
+    --focus-ring-active: rgba(0, 122, 255, 0.12);
+    --tooltip-bg: #1d2939;
+    --tooltip-text: #f2f4f7;
+    --tooltip-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    --engine-bg: #f3f4f6;
+    --engine-loading-bg: #fff4dd;
+    --engine-loading-text: #8a5a00;
+    --engine-loading-border: #f4dfad;
+    --engine-ready-border: #bbf7d0;
+    --engine-error-border: #fecaca;
+    --drop-bg: #fbfbfc;
+    --drop-hover-border: #b9c6dd;
+    --drop-hover-bg: #f4f7fc;
+    --drop-active-bg: #eef4ff;
+    --drop-processing-border: #a9c4f4;
+    --drop-processing-bg: #f1f5ff;
+    --drop-file-border: #bfd3f7;
+    --drop-file-bg: #f6f9ff;
+    --file-summary-bg: #fafafa;
+    --file-ready-text: #123f86;
+    --file-ready-border: #c7daf9;
+    --file-ready-bg: #edf4ff;
+    --file-processing-text: #0f3d8c;
+    --file-processing-border: #bfd3f7;
+    --file-processing-bg: #e8f1ff;
+    --file-size-bg: rgba(0, 0, 0, 0.04);
+    --progress-bg: #f9fbff;
+    --progress-track: #dbe8ff;
+    --progress-value: #2f7bff;
+    --progress-meta: #174894;
+    --input-bg: #ffffff;
+    --advanced-summary-bg: #fafcff;
+    --advanced-summary-hover-border: #b9c6dd;
+    --advanced-summary-hover-bg: #eef2f9;
+    --advanced-summary-open-border: #bfd3f7;
+    --advanced-summary-open-bg: #f6f9ff;
+    --advanced-panel-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
+    --hint-border: #c9d4e7;
+    --hint-bg: #f2f7ff;
+    --hint-text: #355f9d;
+    --result-bg: #fafafa;
+    --result-loading-border: #cfe0fd;
+    --result-loading-bg: #f7faff;
     --radius-lg: 12px;
     --radius-md: 8px;
     --radius-sm: 6px;
+}
+
+:root[data-theme="light"] {
+    color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --bg: #1a1a1c;
+        --panel: #242427;
+        --text: #f5f5f7;
+        --muted: #a1a1a6;
+        --border: #3a3a3d;
+        --primary: #0a84ff;
+        --primary-hover: #3094ff;
+        --secondary: #343438;
+        --secondary-hover: #44444a;
+        --danger-bg: #3b1518;
+        --danger-text: #fca5a5;
+        --info-bg: #102846;
+        --info-text: #9cc8ff;
+        --success-bg: #10331f;
+        --success-text: #86efac;
+        --shadow: 0 2px 12px rgba(0, 0, 0, 0.34);
+        --focus-ring: rgba(10, 132, 255, 0.22);
+        --focus-ring-strong: rgba(10, 132, 255, 0.42);
+        --focus-ring-drop: rgba(10, 132, 255, 0.3);
+        --focus-ring-active: rgba(10, 132, 255, 0.22);
+        --tooltip-bg: #111114;
+        --tooltip-text: #f5f5f7;
+        --tooltip-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
+        --engine-bg: #303034;
+        --engine-loading-bg: #392b12;
+        --engine-loading-text: #f8d48a;
+        --engine-loading-border: #6d531f;
+        --engine-ready-border: #286a3e;
+        --engine-error-border: #7b272b;
+        --drop-bg: #202024;
+        --drop-hover-border: #4a5d78;
+        --drop-hover-bg: #242b36;
+        --drop-active-bg: #182b44;
+        --drop-processing-border: #386198;
+        --drop-processing-bg: #1a2940;
+        --drop-file-border: #3a5f94;
+        --drop-file-bg: #1d2b40;
+        --file-summary-bg: #202023;
+        --file-ready-text: #a9ceff;
+        --file-ready-border: #345d94;
+        --file-ready-bg: #172945;
+        --file-processing-text: #9ec9ff;
+        --file-processing-border: #3a5f94;
+        --file-processing-bg: #172b49;
+        --file-size-bg: rgba(255, 255, 255, 0.08);
+        --progress-bg: #1d2430;
+        --progress-track: #273956;
+        --progress-value: #4aa3ff;
+        --progress-meta: #9cc8ff;
+        --input-bg: #1f1f22;
+        --advanced-summary-bg: #20242a;
+        --advanced-summary-hover-border: #4a5d78;
+        --advanced-summary-hover-bg: #26303d;
+        --advanced-summary-open-border: #3a5f94;
+        --advanced-summary-open-bg: #1d2b40;
+        --advanced-panel-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
+        --hint-border: #41536d;
+        --hint-bg: #1f3048;
+        --hint-text: #a9ceff;
+        --result-bg: #202023;
+        --result-loading-border: #345d94;
+        --result-loading-bg: #17263d;
+    }
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #1a1a1c;
+    --panel: #242427;
+    --text: #f5f5f7;
+    --muted: #a1a1a6;
+    --border: #3a3a3d;
+    --primary: #0a84ff;
+    --primary-hover: #3094ff;
+    --secondary: #343438;
+    --secondary-hover: #44444a;
+    --danger-bg: #3b1518;
+    --danger-text: #fca5a5;
+    --info-bg: #102846;
+    --info-text: #9cc8ff;
+    --success-bg: #10331f;
+    --success-text: #86efac;
+    --shadow: 0 2px 12px rgba(0, 0, 0, 0.34);
+    --focus-ring: rgba(10, 132, 255, 0.22);
+    --focus-ring-strong: rgba(10, 132, 255, 0.42);
+    --focus-ring-drop: rgba(10, 132, 255, 0.3);
+    --focus-ring-active: rgba(10, 132, 255, 0.22);
+    --tooltip-bg: #111114;
+    --tooltip-text: #f5f5f7;
+    --tooltip-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
+    --engine-bg: #303034;
+    --engine-loading-bg: #392b12;
+    --engine-loading-text: #f8d48a;
+    --engine-loading-border: #6d531f;
+    --engine-ready-border: #286a3e;
+    --engine-error-border: #7b272b;
+    --drop-bg: #202024;
+    --drop-hover-border: #4a5d78;
+    --drop-hover-bg: #242b36;
+    --drop-active-bg: #182b44;
+    --drop-processing-border: #386198;
+    --drop-processing-bg: #1a2940;
+    --drop-file-border: #3a5f94;
+    --drop-file-bg: #1d2b40;
+    --file-summary-bg: #202023;
+    --file-ready-text: #a9ceff;
+    --file-ready-border: #345d94;
+    --file-ready-bg: #172945;
+    --file-processing-text: #9ec9ff;
+    --file-processing-border: #3a5f94;
+    --file-processing-bg: #172b49;
+    --file-size-bg: rgba(255, 255, 255, 0.08);
+    --progress-bg: #1d2430;
+    --progress-track: #273956;
+    --progress-value: #4aa3ff;
+    --progress-meta: #9cc8ff;
+    --input-bg: #1f1f22;
+    --advanced-summary-bg: #20242a;
+    --advanced-summary-hover-border: #4a5d78;
+    --advanced-summary-hover-bg: #26303d;
+    --advanced-summary-open-border: #3a5f94;
+    --advanced-summary-open-bg: #1d2b40;
+    --advanced-panel-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
+    --hint-border: #41536d;
+    --hint-bg: #1f3048;
+    --hint-text: #a9ceff;
+    --result-bg: #202023;
+    --result-loading-border: #345d94;
+    --result-loading-bg: #17263d;
 }
 
 body {
@@ -55,10 +241,85 @@ body {
     flex-wrap: wrap;
 }
 
+.title-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 h1 {
     font-size: 28px;
     font-weight: 700;
     letter-spacing: 0;
+}
+
+.badge-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.theme-toggle {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    display: inline-grid;
+    place-items: center;
+    background: var(--engine-bg);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.theme-toggle:hover {
+    border-color: var(--drop-hover-border);
+    background: var(--drop-hover-bg);
+}
+
+.theme-toggle:focus-visible {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.theme-toggle:active {
+    transform: translateY(1px);
+}
+
+.badge-tip {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 240px;
+    background: var(--tooltip-bg);
+    color: var(--tooltip-text);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--tooltip-shadow);
+    z-index: 30;
+    pointer-events: none;
+}
+
+.badge-tip::before {
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    right: 18px;
+    border: 6px solid transparent;
+    border-bottom-color: var(--tooltip-bg);
+}
+
+.badge-wrap:hover .badge-tip,
+.badge-wrap:focus-within .badge-tip {
+    display: block;
 }
 
 .engine-badge {
@@ -67,26 +328,27 @@ h1 {
     font-weight: 600;
     padding: 5px 10px;
     border: 1px solid var(--border);
-    background: #f3f4f6;
+    background: var(--engine-bg);
     color: var(--muted);
+    cursor: default;
 }
 
 .engine-badge.loading {
-    background: #fff4dd;
-    color: #8a5a00;
-    border-color: #f4dfad;
+    background: var(--engine-loading-bg);
+    color: var(--engine-loading-text);
+    border-color: var(--engine-loading-border);
 }
 
 .engine-badge.ready {
     background: var(--success-bg);
     color: var(--success-text);
-    border-color: #bbf7d0;
+    border-color: var(--engine-ready-border);
 }
 
 .engine-badge.error {
     background: var(--danger-bg);
     color: var(--danger-text);
-    border-color: #fecaca;
+    border-color: var(--engine-error-border);
 }
 
 .subtle {
@@ -123,7 +385,7 @@ h1 {
     display: grid;
     place-items: center;
     background: var(--primary);
-    color: #ffffff;
+    color: var(--on-primary);
     font-size: 16px;
     font-weight: 800;
 }
@@ -148,26 +410,45 @@ h1 {
     place-content: center;
     text-align: center;
     cursor: pointer;
-    background: #fbfbfc;
+    background: var(--drop-bg);
     padding: 28px 20px;
     transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+.drop-zone:hover:not(.processing):not(.has-file) {
+    border-color: var(--drop-hover-border);
+    background: var(--drop-hover-bg);
+}
+
+.drop-zone:focus-visible {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 4px var(--focus-ring-drop);
+}
+
 .drop-zone.active {
     border-color: var(--primary);
-    background: #eef4ff;
-    box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.12);
+    background: var(--drop-active-bg);
+    box-shadow: 0 0 0 4px var(--focus-ring-active);
 }
 
 .drop-zone.processing {
     cursor: wait;
-    border-color: #a9c4f4;
-    background: #f1f5ff;
+    border-color: var(--drop-processing-border);
+    background: var(--drop-processing-bg);
 }
 
+/* Once a file is chosen the hero has done its job — shrink it so it stops
+   dominating the page and the real file summary leads instead. */
 .drop-zone.has-file {
-    border-color: #bfd3f7;
-    background: #f6f9ff;
+    min-height: 132px;
+    border-style: solid;
+    border-color: var(--drop-file-border);
+    background: var(--drop-file-bg);
+}
+
+.drop-zone.has-file .drop-title {
+    font-size: 22px;
 }
 
 .drop-title {
@@ -188,7 +469,7 @@ h1 {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 10px 12px;
-    background: #fafafa;
+    background: var(--file-summary-bg);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -197,15 +478,15 @@ h1 {
 }
 
 .file-summary.ready {
-    color: #123f86;
-    border-color: #c7daf9;
-    background: #edf4ff;
+    color: var(--file-ready-text);
+    border-color: var(--file-ready-border);
+    background: var(--file-ready-bg);
 }
 
 .file-summary.processing {
-    color: #0f3d8c;
-    border-color: #bfd3f7;
-    background: #e8f1ff;
+    color: var(--file-processing-text);
+    border-color: var(--file-processing-border);
+    background: var(--file-processing-bg);
 }
 
 .file-name {
@@ -217,7 +498,7 @@ h1 {
     font-size: 12px;
     font-weight: 600;
     color: var(--muted);
-    background: rgba(0, 0, 0, 0.04);
+    background: var(--file-size-bg);
     border-radius: 999px;
     padding: 2px 8px;
 }
@@ -225,7 +506,7 @@ h1 {
 .progress-wrap {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: #f9fbff;
+    background: var(--progress-bg);
     padding: 10px 12px;
 }
 
@@ -235,21 +516,21 @@ h1 {
     border: none;
     border-radius: 999px;
     overflow: hidden;
-    background: #dbe8ff;
+    background: var(--progress-track);
 }
 
 .progress-bar::-webkit-progress-bar {
-    background: #dbe8ff;
+    background: var(--progress-track);
     border-radius: 999px;
 }
 
 .progress-bar::-webkit-progress-value {
-    background: #2f7bff;
+    background: var(--progress-value);
     border-radius: 999px;
 }
 
 .progress-bar::-moz-progress-bar {
-    background: #2f7bff;
+    background: var(--progress-value);
     border-radius: 999px;
 }
 
@@ -257,7 +538,7 @@ h1 {
     margin-top: 8px;
     font-size: 12px;
     font-weight: 600;
-    color: #174894;
+    color: var(--progress-meta);
 }
 
 .target-row {
@@ -286,11 +567,13 @@ input[type="number"] {
     font-size: 14px;
     padding: 10px 10px;
     outline: none;
+    background: var(--input-bg);
+    color: var(--text);
 }
 
 input[type="number"]:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.16);
+    box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 select {
@@ -300,12 +583,13 @@ select {
     font-size: 14px;
     padding: 10px 10px;
     outline: none;
-    background: #ffffff;
+    background: var(--input-bg);
+    color: var(--text);
 }
 
 select:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.16);
+    box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .advanced {
@@ -322,7 +606,7 @@ select:focus {
     align-items: center;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: #fafcff;
+    background: var(--advanced-summary-bg);
     color: var(--text);
     padding: 10px 14px;
     user-select: none;
@@ -332,16 +616,28 @@ select:focus {
     display: none;
 }
 
+.advanced > summary:hover {
+    border-color: var(--advanced-summary-hover-border);
+    background: var(--advanced-summary-hover-bg);
+}
+
+.advanced > summary:focus-visible {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
 .advanced > summary::after {
-    content: "v";
+    content: "\25BE";
     margin-left: 8px;
     font-size: 11px;
     color: var(--muted);
+    transition: transform 0.2s ease;
 }
 
 .advanced[open] > summary {
-    border-color: #bfd3f7;
-    background: #f6f9ff;
+    border-color: var(--advanced-summary-open-border);
+    background: var(--advanced-summary-open-bg);
 }
 
 .advanced[open] > summary::after {
@@ -363,7 +659,7 @@ select:focus {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
+    box-shadow: var(--advanced-panel-shadow);
     padding: 14px;
 }
 
@@ -398,9 +694,9 @@ select:focus {
     width: 16px;
     height: 16px;
     border-radius: 999px;
-    border: 1px solid #c9d4e7;
-    background: #f2f7ff;
-    color: #355f9d;
+    border: 1px solid var(--hint-border);
+    background: var(--hint-bg);
+    color: var(--hint-text);
     font-size: 11px;
     font-weight: 700;
     text-decoration: none;
@@ -434,6 +730,11 @@ select:focus {
     flex: 1 1 160px;
 }
 
+.btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--focus-ring-strong);
+}
+
 .btn:disabled {
     opacity: 0.55;
     cursor: not-allowed;
@@ -441,7 +742,7 @@ select:focus {
 
 .btn-primary {
     background: var(--primary);
-    color: #ffffff;
+    color: var(--on-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -461,6 +762,25 @@ select:focus {
     min-height: 30px;
     font-size: 12px;
     padding: 6px 10px;
+}
+
+/* Inverts button prominence after a successful minimize — Download leads. */
+.action-row.download-ready #minimizeBtn {
+    background: var(--secondary);
+    color: var(--text);
+}
+
+.action-row.download-ready #minimizeBtn:hover:not(:disabled) {
+    background: var(--secondary-hover);
+}
+
+.action-row.download-ready #downloadBtn {
+    background: var(--primary);
+    color: var(--on-primary);
+}
+
+.action-row.download-ready #downloadBtn:hover:not(:disabled) {
+    background: var(--primary-hover);
 }
 
 .notice {
@@ -488,15 +808,15 @@ select:focus {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 12px;
-    background: #fafafa;
+    background: var(--result-bg);
     display: grid;
     gap: 6px;
     font-size: 13px;
 }
 
 .result.loading {
-    border-color: #cfe0fd;
-    background: #f7faff;
+    border-color: var(--result-loading-border);
+    background: var(--result-loading-bg);
 }
 
 @media (max-width: 700px) {

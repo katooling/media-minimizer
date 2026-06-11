@@ -3,6 +3,8 @@ import { fetchFile } from "./vendor/ffmpeg/util/index.js";
 
 const elements = {
     engineBadge: document.getElementById("engineBadge"),
+    badgeTip: document.getElementById("badgeTip"),
+    themeToggle: document.getElementById("themeToggle"),
     dropZone: document.getElementById("dropZone"),
     dropTitle: document.getElementById("dropTitle"),
     dropNote: document.getElementById("dropNote"),
@@ -58,6 +60,12 @@ const state = {
     lastProgressEventAt: 0,
     lastLogEventAt: 0,
     lastEncodePlan: null,
+};
+
+const themeState = {
+    mediaQuery: null,
+    storedTheme: null,
+    effectiveTheme: "light",
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
@@ -128,10 +136,22 @@ const DROP_TITLE_PROCESSING = "Minimizing in progress";
 const DROP_NOTE_PROCESSING = "Please wait until the current run finishes";
 const STATUS_VIDEO_PROCESSING = "Video processing in progress. Live details are shown in the progress panel.";
 const STATUS_IMAGE_PROCESSING = "Image processing in progress. Live details are shown in the progress panel.";
+const THEME_STORAGE_KEY = "mm-theme";
+const THEME_DARK_QUERY = "(prefers-color-scheme: dark)";
+const ENGINE_TIP = {
+    loading: "The video encoder is loading in your browser. Image minimization works right away.",
+    ready_mt_sw: "Running in fast multi-thread mode (enabled by a service worker). Best speed for video.",
+    ready_mt_header: "Running in fast multi-thread mode (enabled by server headers). Best speed for video.",
+    ready_st_large: "Running in single-thread mode - handles large video files. Slower than multi-thread.",
+    ready_st_lite: "Running in lightweight single-thread mode. Good for images and small videos.",
+    error: "The video engine failed to load. Image files still work. Try refreshing if you need video.",
+};
 
 init();
 
 function init() {
+    initTheme();
+
     elements.fileInput.addEventListener("change", onFileInputChange);
     elements.dropZone.addEventListener("dragover", onDragOver);
     elements.dropZone.addEventListener("dragleave", onDragLeave);
@@ -145,6 +165,21 @@ function init() {
     elements.advancedThreadsSelect?.addEventListener("change", onAdvancedSettingsChange);
     elements.advancedResetBtn?.addEventListener("click", onAdvancedResetClick);
 
+    // Close the Advanced popover on outside click or Escape.
+    const advancedSection = document.getElementById("advancedSection");
+    if (advancedSection) {
+        document.addEventListener("click", (event) => {
+            if (advancedSection.open && !advancedSection.contains(event.target)) {
+                advancedSection.open = false;
+            }
+        });
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && advancedSection.open) {
+                advancedSection.open = false;
+            }
+        });
+    }
+
     // Exposed for E2E assertions of runtime selection behavior.
     if (typeof window !== "undefined") {
         window.__mediaMinimizerDebug = {
@@ -156,6 +191,7 @@ function init() {
             getLastRunSummary: () => buildLastRunSummary(),
             getLiveState: () => getLiveDebugState(),
             getAdvancedVideoSettings: () => ({ ...getAdvancedVideoSettings() }),
+            getThemeState: () => getThemeDebugState(),
             getLastEncodePlan: () => (state.lastEncodePlan ? {
                 ...state.lastEncodePlan,
                 profile: state.lastEncodePlan.profile ? { ...state.lastEncodePlan.profile } : null,
@@ -182,6 +218,86 @@ function init() {
     resetProgressState();
     setStatus("Preparing local engine... Drop a video or image to start.", "info");
     warmupFfmpeg();
+}
+
+function initTheme() {
+    themeState.mediaQuery = typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(THEME_DARK_QUERY)
+        : null;
+    themeState.storedTheme = readStoredTheme();
+    applyEffectiveTheme();
+
+    elements.themeToggle?.addEventListener("click", onThemeToggleClick);
+
+    if (themeState.mediaQuery) {
+        const onChange = () => {
+            if (!themeState.storedTheme) {
+                applyEffectiveTheme();
+            }
+        };
+        if (typeof themeState.mediaQuery.addEventListener === "function") {
+            themeState.mediaQuery.addEventListener("change", onChange);
+        } else if (typeof themeState.mediaQuery.addListener === "function") {
+            themeState.mediaQuery.addListener(onChange);
+        }
+    }
+}
+
+function onThemeToggleClick() {
+    const nextTheme = themeState.effectiveTheme === "dark" ? "light" : "dark";
+    themeState.storedTheme = nextTheme;
+    writeStoredTheme(nextTheme);
+    applyEffectiveTheme();
+    recordAppEvent("theme-changed", getThemeDebugState());
+}
+
+function applyEffectiveTheme() {
+    themeState.effectiveTheme = resolveEffectiveTheme();
+    document.documentElement.dataset.theme = themeState.effectiveTheme;
+    updateThemeToggle();
+}
+
+function resolveEffectiveTheme() {
+    if (themeState.storedTheme === "light" || themeState.storedTheme === "dark") {
+        return themeState.storedTheme;
+    }
+    return themeState.mediaQuery?.matches ? "dark" : "light";
+}
+
+function updateThemeToggle() {
+    if (!elements.themeToggle) {
+        return;
+    }
+    const isDark = themeState.effectiveTheme === "dark";
+    elements.themeToggle.textContent = isDark ? "☀️" : "🌙";
+    elements.themeToggle.setAttribute("aria-pressed", String(isDark));
+    elements.themeToggle.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
+}
+
+function readStoredTheme() {
+    try {
+        const stored = localStorage.getItem(THEME_STORAGE_KEY);
+        return stored === "light" || stored === "dark" ? stored : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+function writeStoredTheme(theme) {
+    try {
+        localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch (error) {
+        // The applied theme still works for this page when storage is unavailable.
+    }
+}
+
+function getThemeDebugState() {
+    return {
+        mode: themeState.storedTheme || "system",
+        effectiveTheme: themeState.effectiveTheme,
+        storedTheme: themeState.storedTheme,
+        systemTheme: themeState.mediaQuery?.matches ? "dark" : "light",
+    };
 }
 
 async function warmupFfmpeg() {
@@ -411,6 +527,7 @@ function clearOutput() {
     }
     state.downloadUrl = "";
     elements.downloadBtn.disabled = true;
+    elements.minimizeBtn.closest(".action-row")?.classList.remove("download-ready");
     elements.result.hidden = true;
     elements.originalSize.textContent = "-";
     elements.outputSize.textContent = "-";
@@ -547,6 +664,7 @@ function setOutputResult(result, targetBytes) {
     elements.result.classList.remove("loading");
     elements.result.hidden = false;
     elements.downloadBtn.disabled = false;
+    elements.minimizeBtn.closest(".action-row")?.classList.add("download-ready");
 
     const totalMs = state.lastRunMetrics?.totalMs;
     const timingSuffix = Number.isFinite(totalMs) ? ` Total ${formatDurationMs(totalMs)}.` : "";
@@ -693,10 +811,27 @@ function setStatus(text, kind) {
 function setEngineBadge(kind, text) {
     elements.engineBadge.textContent = text;
     elements.engineBadge.className = `engine-badge ${kind}`;
+    if (elements.badgeTip) {
+        elements.badgeTip.textContent = ENGINE_TIP[kind] ?? ENGINE_TIP.loading;
+    }
 }
 
 function setEngineReadyBadge(mode) {
-    setEngineBadge("ready", `Engine: Ready (${formatRuntimeLabel(mode)})`);
+    const label = formatRuntimeLabel(mode);
+    elements.engineBadge.textContent = `Engine: Ready (${label})`;
+    elements.engineBadge.className = "engine-badge ready";
+    if (elements.badgeTip) {
+        const isolationSource = getIsolationSource();
+        let tipKey = "loading";
+        if (mode === "mt-fast") {
+            tipKey = isolationSource === "sw" ? "ready_mt_sw" : "ready_mt_header";
+        } else if (mode === "st-large") {
+            tipKey = "ready_st_large";
+        } else if (mode === "st-lite") {
+            tipKey = "ready_st_lite";
+        }
+        elements.badgeTip.textContent = ENGINE_TIP[tipKey] ?? ENGINE_TIP.loading;
+    }
 }
 
 function formatRuntimeLabel(mode) {
