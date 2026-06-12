@@ -327,6 +327,13 @@ test("analytics is disabled by default on local app loads", async ({ page }) => 
     expect(remoteRequests).toEqual([]);
 });
 
+test("analytics config allows the deployed GitHub Pages host", async ({ page }) => {
+    await openApp(page);
+
+    const allowedHostnames = await page.evaluate(() => window.MEDIA_MINIMIZER_ANALYTICS?.allowedHostnames || []);
+    expect(allowedHostnames).toContain("katooling.github.io");
+});
+
 test("privacy note explains browser-only processing and analytics boundaries", async ({ page }) => {
     await openApp(page);
 

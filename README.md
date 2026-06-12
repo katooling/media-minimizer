@@ -150,7 +150,7 @@ PostHog analytics are configured as a small optional adapter around the app's lo
 Default behavior:
 
 - Localhost, `127.0.0.1`, and unknown hosts do not load PostHog or send analytics.
-- Production analytics are allowed only for configured hostnames in `window.MEDIA_MINIMIZER_ANALYTICS`.
+- Production analytics are allowed only for `katooling.github.io` in `window.MEDIA_MINIMIZER_ANALYTICS`.
 - The public PostHog project token is safe to ship in `index.html`; do not add a personal API key to this app.
 - Autocapture, pageleave, dead-click capture, session replay, surveys, feature flags, and persistent browser storage are disabled.
 
