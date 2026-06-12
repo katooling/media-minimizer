@@ -21,6 +21,9 @@
     --secondary-hover: #d5d5da;
     --danger-bg: #fee2e2;
     --danger-text: #9b1c1c;
+    --danger-button-bg: #b42318;
+    --danger-button-hover: #912018;
+    --on-danger: #ffffff;
     --info-bg: #e7f0ff;
     --info-text: #184b9c;
     --success-bg: #dcfce7;
@@ -96,6 +99,9 @@
         --secondary-hover: #44444a;
         --danger-bg: #3b1518;
         --danger-text: #fca5a5;
+        --danger-button-bg: #d92d20;
+        --danger-button-hover: #f04438;
+        --on-danger: #ffffff;
         --info-bg: #102846;
         --info-text: #9cc8ff;
         --success-bg: #10331f;
@@ -163,6 +169,9 @@
     --secondary-hover: #44444a;
     --danger-bg: #3b1518;
     --danger-text: #fca5a5;
+    --danger-button-bg: #d92d20;
+    --danger-button-hover: #f04438;
+    --on-danger: #ffffff;
     --info-bg: #102846;
     --info-text: #9cc8ff;
     --success-bg: #10331f;
@@ -794,6 +803,15 @@ select:focus {
 
 .btn-secondary:hover:not(:disabled) {
     background: var(--secondary-hover);
+}
+
+.btn-danger {
+    background: var(--danger-button-bg);
+    color: var(--on-danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+    background: var(--danger-button-hover);
 }
 
 .btn-compact {

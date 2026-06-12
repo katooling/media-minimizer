@@ -105,7 +105,7 @@ async function waitForTerminalRun(page, options = {}) {
         const live = debug?.getLiveState?.();
         const processing = Boolean(live?.processing);
         const success = /^Done\./i.test(status);
-        const failure = /failed|error|conversion failed|stalled|timeout|max size must|unsupported/i.test(status);
+        const failure = /failed|error|conversion failed|stalled|timeout|max size must|unsupported|cancelled/i.test(status);
         return !processing && (success || failure);
     }, null, { timeout });
 }

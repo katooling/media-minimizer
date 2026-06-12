@@ -13,6 +13,7 @@ const elements = {
     fileSummary: document.getElementById("fileSummary"),
     maxSizeInput: document.getElementById("maxSizeInput"),
     minimizeBtn: document.getElementById("minimizeBtn"),
+    cancelBtn: document.getElementById("cancelBtn"),
     downloadBtn: document.getElementById("downloadBtn"),
     progressWrap: document.getElementById("progressWrap"),
     progressBar: document.getElementById("progressBar"),
@@ -37,6 +38,7 @@ const state = {
     outputFilename: "",
     downloadUrl: "",
     processing: false,
+    cancelRequested: false,
     ffmpeg: null,
     ffmpegLoader: null,
     ffmpegProgressCb: null,
@@ -190,6 +192,7 @@ function init() {
     elements.dropZone.addEventListener("dragleave", onDragLeave);
     elements.dropZone.addEventListener("drop", onDrop);
     elements.minimizeBtn.addEventListener("click", onMinimizeClick);
+    elements.cancelBtn?.addEventListener("click", onCancelClick);
     elements.downloadBtn.addEventListener("click", onDownloadClick);
     elements.advancedSpeedSelect?.addEventListener("change", onAdvancedSettingsChange);
     elements.advancedResolutionSelect?.addEventListener("change", onAdvancedSettingsChange);
@@ -1136,6 +1139,7 @@ async function onMinimizeClick() {
         return;
     }
 
+    state.cancelRequested = false;
     setProcessing(true);
     state.lastEncodePlan = null;
     clearOutput();
@@ -1159,7 +1163,7 @@ async function onMinimizeClick() {
             try {
                 result = await minimizeVideo(state.inputFile, targetBytes, runMetrics);
             } catch (error) {
-                if (shouldRetryWithSingleThread(error)) {
+                if (!isRunCancelledError(error) && shouldRetryWithSingleThread(error)) {
                     appendMetricNote(runMetrics, "mt-runtime-fallback");
                     const fallbackReason = error?.code === "ENCODE_STALLED" ? "stalled" : error?.code === "ENCODE_FILTER_GRAPH" ? "filter-graph failed" : "failed";
                     recordAppEvent("runtime-fallback", {
@@ -1202,6 +1206,25 @@ async function onMinimizeClick() {
         });
         setOutputResult(result, targetBytes);
     } catch (error) {
+        if (isRunCancelledError(error)) {
+            runMetrics.failureCode = "RUN_CANCELLED";
+            runMetrics.failureMessage = "Run cancelled by user.";
+            endRunMetrics(runMetrics, "cancelled");
+            traceEvent("run-end", { status: "cancelled" });
+            recordAppEvent("minimize-complete", {
+                status: "cancelled",
+                kind: inputType,
+                runtimeMode: state.ffmpegMode,
+                attemptedModes: runMetrics?.attemptedModes || [],
+                failureCode: "RUN_CANCELLED",
+                totalMs: runMetrics?.totalMs ?? null,
+                inputSizeBytes: state.inputFile?.size || 0,
+                targetBytes,
+            });
+            setFailedResultState();
+            setStatus("Cancelled. No output was created.", "info");
+            return;
+        }
         if (runMetrics) {
             runMetrics.failureCode = error?.code || "RUN_FAILED";
             runMetrics.failureMessage = error instanceof Error ? error.message : String(error || "Minimize failed.");
@@ -1230,7 +1253,23 @@ async function onMinimizeClick() {
         stopProgressTracker();
         setProcessing(false);
         finalizeRunTrace();
+        state.cancelRequested = false;
     }
+}
+
+function onCancelClick() {
+    if (!state.processing || state.cancelRequested) {
+        return;
+    }
+    state.cancelRequested = true;
+    updateCancelButtonState();
+    traceEvent("cancel-requested", { stage: state.currentStage });
+    recordAppEvent("minimize-cancel-requested", {
+        kind: state.inputFile ? detectInputType(state.inputFile) : "unknown",
+    });
+    setProgressUpdate("Cancelling", null);
+    setStatus("Cancelling...", "info");
+    terminateFfmpegInstance();
 }
 
 function setOutputResult(result, targetBytes) {
@@ -1386,6 +1425,7 @@ function setProcessing(isProcessing) {
     state.processing = isProcessing;
     elements.minimizeBtn.disabled = isProcessing || !state.inputFile || detectInputType(state.inputFile) === "unsupported";
     elements.downloadBtn.disabled = isProcessing || !state.outputBlob;
+    updateCancelButtonState();
     elements.fileInput.disabled = isProcessing;
     elements.maxSizeInput.disabled = isProcessing;
     if (!isProcessing) {
@@ -1393,6 +1433,15 @@ function setProcessing(isProcessing) {
     }
     renderFileSummary();
     updateDropZoneState();
+}
+
+function updateCancelButtonState() {
+    if (!elements.cancelBtn) {
+        return;
+    }
+    elements.cancelBtn.hidden = !state.processing;
+    elements.cancelBtn.disabled = !state.processing || state.cancelRequested;
+    elements.cancelBtn.textContent = state.cancelRequested ? "Cancelling..." : "Cancel";
 }
 
 function setStatus(text, kind) {
@@ -1541,6 +1590,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
     traceEvent("engine-load", { phase: "start" });
     beginStage(runMetrics, "load");
     const ffmpeg = await getFfmpeg(file.size);
+    throwIfRunCancelled();
     recordRunModeAttempt(runMetrics, state.ffmpegMode);
     endStage(runMetrics, "load", { mode: state.ffmpegMode });
     traceEvent("engine-load", { phase: "end", mode: state.ffmpegMode });
@@ -1551,6 +1601,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
     state.lastLogEventAt = 0;
     setCurrentStage("input");
     const inputHandle = await prepareVideoInputWithMetrics(ffmpeg, file, runMetrics);
+    throwIfRunCancelled();
     traceEvent("input-ready", { strategy: inputHandle.mounted ? "workerfs" : "writeFile" });
 
     try {
@@ -1577,6 +1628,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             sourceWidth: Number.isFinite(sourceWidth) ? sourceWidth : null,
             sourceHeight: Number.isFinite(sourceHeight) ? sourceHeight : null,
         });
+        throwIfRunCancelled();
 
         const etaBand = estimateVideoEtaBand(durationSeconds, state.ffmpegMode);
         setProgressUpdate(`Encoding video (attempt 1) • ${etaBand}`, null);
@@ -1591,6 +1643,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
                 inputPath: inputHandle.inputPath,
                 outputPath,
             });
+            throwIfRunCancelled();
             endStage(runMetrics, "remux", {
                 success: Boolean(remuxAttempt),
                 outputBytes: remuxAttempt?.blob?.size ?? null,
@@ -1634,6 +1687,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
             runMetrics,
             durationSeconds,
         });
+        throwIfRunCancelled();
 
         if (bestAttempt.blob.size > Math.floor(targetBytes * FALLBACK_TARGET_MARGIN)) {
             const reductionFactor = clamp((targetBytes / bestAttempt.blob.size) * 0.92, 0.45, 0.9);
@@ -1659,6 +1713,7 @@ async function minimizeVideo(file, targetBytes, runMetrics) {
                 runMetrics,
                 durationSeconds,
             });
+            throwIfRunCancelled();
 
             if (fallbackAttempt.blob.size < bestAttempt.blob.size) {
                 bestAttempt = fallbackAttempt;
@@ -1723,6 +1778,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
     };
 
     await safelyDeleteFile(ffmpeg, outputPath);
+    throwIfRunCancelled();
     let activeProfile = profile;
     let attempts = 1;
     let activeArgs = buildVideoEncodeArgs(inputPath, outputPath, activeProfile);
@@ -1741,6 +1797,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
         durationSeconds,
         modeAtStart,
     });
+    throwIfRunCancelled();
     if (exitCode !== 0 && activeProfile.audioMode === "copy") {
         attempts += 1;
         activeProfile = {
@@ -1764,6 +1821,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
             durationSeconds,
             modeAtStart,
         });
+        throwIfRunCancelled();
     }
 
     if (exitCode !== 0) {
@@ -1805,6 +1863,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
                 durationSeconds,
                 modeAtStart,
             });
+            throwIfRunCancelled();
         }
     }
 
@@ -1849,6 +1908,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
                 durationSeconds,
                 modeAtStart,
             });
+            throwIfRunCancelled();
         }
     }
 
@@ -1864,6 +1924,7 @@ async function runVideoEncodeAttempt({ ffmpeg, inputPath, outputPath, profile, a
     traceEvent("output-read", { phase: "start", attemptLabel });
     beginStage(runMetrics, "output-read");
     const outputData = await ffmpeg.readFile(outputPath);
+    throwIfRunCancelled();
     endStage(runMetrics, "output-read", { outputBytes: outputData.length });
     traceEvent("output-read", {
         phase: "end",
@@ -1881,6 +1942,9 @@ async function execVideoForRetryableAttempt(options) {
     try {
         return await execVideoWithWatchdog(options);
     } catch (error) {
+        if (isRunCancelledError(error)) {
+            throw createRunCancelledError();
+        }
         if (error?.code === "ENCODE_STALLED" || error?.code === "ENCODE_TIMEOUT") {
             throw error;
         }
@@ -1910,11 +1974,13 @@ async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, ou
         return runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath, args });
     }
 
+    throwIfRunCancelled();
     const watchdog = startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart);
     const startedAt = performance.now();
 
     try {
         const exitCode = await ffmpeg.exec(args, ENCODE_TIMEOUT_MS);
+        throwIfRunCancelled();
         if (watchdog.stallError) {
             throw watchdog.stallError;
         }
@@ -1931,6 +1997,12 @@ async function execVideoWithWatchdog({ ffmpeg, args, attemptLabel, inputPath, ou
         }
         return exitCode;
     } catch (error) {
+        if (isRunCancelledError(error)) {
+            throw createRunCancelledError();
+        }
+        if (state.cancelRequested) {
+            throw createRunCancelledError();
+        }
         if (watchdog.stallError) {
             throw watchdog.stallError;
         }
@@ -1953,6 +2025,9 @@ function startEncodeWatchdog(ffmpeg, attemptLabel, durationSeconds, modeAtStart)
 
     const timerId = globalThis.setInterval(() => {
         if (stopped || !state.processing) {
+            return;
+        }
+        if (state.cancelRequested) {
             return;
         }
         const now = performance.now();
@@ -2055,7 +2130,8 @@ async function runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath, a
 
     if (DEBUG_MOCK_MODE === "stall") {
         setCurrentStage("encode");
-        await delay(ENCODE_STALL_THRESHOLD_MS + 1500);
+        await delay(ENCODE_STALL_THRESHOLD_MS + 1500, { cancelable: true });
+        throwIfRunCancelled();
         throw createAppError("ENCODE_STALLED", "Encode stalled after mock timeout. Open debug logs.", {
             mode: state.ffmpegMode,
             stage: state.currentStage,
@@ -2066,7 +2142,8 @@ async function runMockVideoExec({ ffmpeg, attemptLabel, inputPath, outputPath, a
     if (DEBUG_MOCK_MODE === "mt-stall-fallback") {
         setCurrentStage("encode");
         if (!state.disableMtForSession) {
-            await delay(ENCODE_STALL_THRESHOLD_MS + 1500);
+            await delay(ENCODE_STALL_THRESHOLD_MS + 1500, { cancelable: true });
+            throwIfRunCancelled();
             throw createAppError("ENCODE_STALLED", "Encode stalled in MT mock run. Open debug logs.", {
                 mode: state.ffmpegMode,
                 stage: state.currentStage,
@@ -2133,6 +2210,7 @@ async function runVideoRemuxAttempt({ ffmpeg, inputPath, outputPath }) {
         "mov",
         outputPath,
     ]);
+    throwIfRunCancelled();
     if (exitCode !== 0) {
         return null;
     }
@@ -2740,13 +2818,16 @@ async function prepareVideoInput(ffmpeg, file) {
     const mountedInputPath = `${mountPoint}/${mountFileName}`;
 
     await safelyDeleteDir(ffmpeg, mountPoint);
+    throwIfRunCancelled();
 
     try {
         await ffmpeg.createDir(mountPoint);
+        throwIfRunCancelled();
         if (DEBUG_INPUT_MOCK === "workerfs-fails") {
             throw new Error("Debug input mock forced WORKERFS mount failure.");
         }
         await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, mountPoint);
+        throwIfRunCancelled();
         return {
             mounted: true,
             mountPoint,
@@ -2755,10 +2836,12 @@ async function prepareVideoInput(ffmpeg, file) {
     } catch (error) {
         await safelyUnmount(ffmpeg, mountPoint);
         await safelyDeleteDir(ffmpeg, mountPoint);
+        throwIfRunCancelled();
 
         const inputExt = getExtension(file.name) || ".bin";
         const inputPath = `input${inputExt}`;
         await ffmpeg.writeFile(inputPath, await fetchFile(file));
+        throwIfRunCancelled();
         return {
             mounted: false,
             mountPoint: "",
@@ -2859,6 +2942,10 @@ async function getFfmpeg(fileSizeBytes = null) {
 
                 try {
                     await ffmpeg.load(candidate.loadOptions);
+                    if (state.cancelRequested) {
+                        ffmpeg.terminate();
+                        throw createRunCancelledError();
+                    }
                     state.ffmpeg = ffmpeg;
                     state.ffmpegMode = candidate.mode;
                     recordAppEvent("engine-load-success", {
@@ -2869,6 +2956,9 @@ async function getFfmpeg(fileSizeBytes = null) {
                     setEngineReadyBadge(candidate.mode);
                     return ffmpeg;
                 } catch (error) {
+                    if (isRunCancelledError(error)) {
+                        throw error;
+                    }
                     lastError = error;
                     recordAppEvent("engine-load-failed", {
                         mode: candidate.mode,
@@ -2899,7 +2989,9 @@ async function minimizeImage(file, targetBytes, runMetrics) {
     setProgressUpdate("Reading image", 5);
     setStatus("Reading image...", "info");
     await validateImageHeader(file);
+    throwIfRunCancelled();
     const bitmap = await createImageBitmapWithTimeout(file, IMAGE_DECODE_TIMEOUT_MS);
+    throwIfRunCancelled();
     endStage(runMetrics, "image-read");
 
     try {
@@ -2932,6 +3024,7 @@ async function minimizeImage(file, targetBytes, runMetrics) {
                 const perScaleQuality = mimeType === "image/png" ? [undefined] : qualitySteps;
                 for (const quality of perScaleQuality) {
                     const blob = await canvasToBlob(canvas, mimeType, quality);
+                    throwIfRunCancelled();
                     if (!bestBlob || blob.size < bestBlob.size) {
                         bestBlob = blob;
                         bestMimeType = mimeType;
@@ -3070,6 +3163,7 @@ function buildLastRunSummary() {
         "encode-progress",
         "encode-retry",
         "encode-silent",
+        "cancel-requested",
         "output-read",
         "encode-end",
         "error",
@@ -3196,9 +3290,36 @@ function createAppError(code, message, details = {}) {
     return error;
 }
 
-function delay(ms) {
+function createRunCancelledError() {
+    return createAppError("RUN_CANCELLED", "Run cancelled by user.");
+}
+
+function isRunCancelledError(error) {
+    return state.cancelRequested || error?.code === "RUN_CANCELLED";
+}
+
+function throwIfRunCancelled() {
+    if (state.cancelRequested) {
+        throw createRunCancelledError();
+    }
+}
+
+function delay(ms, options = {}) {
+    if (!options.cancelable) {
+        return new Promise((resolve) => {
+            globalThis.setTimeout(resolve, ms);
+        });
+    }
     return new Promise((resolve) => {
-        globalThis.setTimeout(resolve, ms);
+        const startedAt = performance.now();
+        const tick = () => {
+            if (state.cancelRequested || performance.now() - startedAt >= ms) {
+                resolve();
+                return;
+            }
+            globalThis.setTimeout(tick, 50);
+        };
+        tick();
     });
 }
 

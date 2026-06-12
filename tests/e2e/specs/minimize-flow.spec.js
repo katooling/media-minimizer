@@ -917,6 +917,31 @@ test("mock stall triggers fallback once then succeeds", async ({ page }) => {
     expect(debug.trace.some((entry) => entry.event === "run-end" && entry.status === "success")).toBe(true);
 });
 
+test("cancel stops an active video minimize without creating output", async ({ page }) => {
+    test.setTimeout(90000);
+    await openApp(page, "/?debug=1&ffmpegMock=stall&stallMs=2500");
+    await uploadForcedEncodeVideo(page, FIXTURES_DIR);
+
+    await page.locator("#minimizeBtn").click();
+    await expect(page.locator("#cancelBtn")).toBeVisible();
+    await expect(page.locator("#cancelBtn")).toBeEnabled();
+
+    await page.locator("#cancelBtn").click();
+    await waitForTerminalRun(page, { timeout: 45000 });
+
+    await expect(page.locator("#status")).toContainText("Cancelled.");
+    await expect(page.locator("#cancelBtn")).toBeHidden();
+    await expect(page.locator("#downloadBtn")).toBeDisabled();
+    await expect(page.locator("#outputName")).toHaveText("-");
+
+    const debug = await readDebugState(page);
+    expect(debug.metrics?.status).toBe("cancelled");
+    expect(debug.metrics?.failureCode).toBe("RUN_CANCELLED");
+    expect(debug.live.processing).toBe(false);
+    expect(debug.trace.some((entry) => entry.event === "cancel-requested")).toBe(true);
+    expect(debug.trace.some((entry) => entry.event === "run-end" && entry.status === "cancelled")).toBe(true);
+});
+
 test("mock stall without recovery fails explicitly", async ({ page }) => {
     test.setTimeout(90000);
     await openApp(page, "/?debug=1&ffmpegMock=stall&stallMs=2500");
